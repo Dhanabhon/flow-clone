@@ -1,28 +1,31 @@
-//! Raw device writer.
+//! Phase 1 raw device writer placeholder.
 
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 
-/// Writer over a raw device. Opens the target node with write access.
-pub struct RawWriter {
-    file: File,
-}
+/// Placeholder writer. Real disk writes are disabled until the privileged
+/// helper and safety review are implemented.
+pub struct RawWriter;
 
 impl RawWriter {
-    pub fn open(path: &Path) -> io::Result<Self> {
-        let file = OpenOptions::new().write(true).open(path)?;
-        Ok(Self { file })
+    pub fn open(_path: &Path) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "raw disk writes are disabled in FlowClone Phase 1",
+        ))
     }
 
-    /// Write a full block. Errors propagate as `io::Error`.
-    pub fn write_block(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.file.write_all(buf)
+    /// TODO: implement through the macOS privileged helper after safety gates
+    /// are complete.
+    pub fn write_block(&mut self, _buf: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "raw disk writes are disabled in FlowClone Phase 1",
+        ))
     }
 
-    /// Flush any kernel buffer to the device.
+    /// Flush is a no-op while writes are disabled.
     pub fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        Ok(())
     }
 }

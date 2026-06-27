@@ -1,10 +1,12 @@
 import { useMemo } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { DiskCard } from "@/components/flowclone/DiskCard";
 import { FlowArrow } from "@/components/flowclone/FlowArrow";
 import { useDisks } from "@/hooks/use-disks";
 import { useFlowStore } from "@/stores/flow-store";
+import { createImageStub, isTauriRuntime } from "@/lib/tauri";
 import { formatBytes } from "@/lib/utils";
 
 /**
@@ -14,7 +16,16 @@ import { formatBytes } from "@/lib/utils";
  */
 export function HomeScreen() {
   const { data: disks, isLoading } = useDisks();
-  const { source, target, setSource, setTarget, goTo } = useFlowStore();
+  const {
+    source,
+    target,
+    setSource,
+    setTarget,
+    setImagePath,
+    beginClone,
+    setProgress,
+    goTo,
+  } = useFlowStore();
 
   const canStart = useMemo(() => {
     if (!source || !target) return false;
@@ -26,13 +37,49 @@ export function HomeScreen() {
     source && target && source.device_path === target.device_path;
   const tooSmall =
     source && target && target.total_bytes < source.total_bytes;
+  const showImageMigration = !isLoading && disks?.length === 1;
+
+  async function startImageMigration() {
+    const selectedSource = source ?? disks?.[0];
+    if (!selectedSource) return;
+
+    const imagePath = isTauriRuntime()
+      ? await save({
+          defaultPath: "migration.flowimg",
+          filters: [{ name: "FlowClone image", extensions: ["flowimg"] }],
+        })
+      : window.prompt("Save migration image as", "migration.flowimg");
+    if (!imagePath) return;
+
+    setSource(selectedSource);
+    setTarget(null);
+    setImagePath(imagePath);
+    const jobId = await createImageStub(selectedSource.device_path, imagePath);
+    beginClone(jobId, "image");
+    setProgress({
+      job_id: jobId,
+      phase: "completed",
+      fraction: 1,
+      bytes_done: selectedSource.total_bytes,
+      bytes_total: selectedSource.total_bytes,
+      read_speed: 0,
+      write_speed: 0,
+      elapsed_secs: 0.1,
+      eta_secs: 0,
+      current_operation: "Mock migration image created",
+    });
+    goTo("completed");
+  }
 
   return (
     <main className="mx-auto min-h-screen max-w-content px-8 py-12">
       <header className="mb-12 text-center">
-        <h1 className="text-4xl font-semibold tracking-tight">FlowClone</h1>
-        <p className="mt-2 text-lg text-muted">
-          Safe SSD Cloning — clone your disk with confidence.
+        <h1 className="text-4xl font-semibold tracking-tight">
+          Move everything. Lose nothing.
+        </h1>
+        <p className="mx-auto mt-3 max-w-2xl text-lg text-muted">
+          A modern, open-source SSD migration assistant for macOS. Beautifully
+          simple, safe by design.
         </p>
       </header>
 
@@ -45,7 +92,7 @@ export function HomeScreen() {
       )}
 
       {disks && disks.length > 0 && (
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-6">
+        <div className="grid grid-cols-1 items-center gap-6 lg:grid-cols-[1fr_auto_1fr]">
           <Slot
             label="Source"
             disks={disks}
@@ -64,6 +111,24 @@ export function HomeScreen() {
             onSelect={setTarget}
           />
         </div>
+      )}
+
+      {showImageMigration && (
+        <motion.section
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mt-8 rounded-card border border-primary/30 bg-primary/10 p-5 text-center"
+        >
+          <h2 className="text-lg font-semibold">Image Migration available</h2>
+          <p className="mx-auto mt-2 max-w-2xl text-sm text-muted">
+            FlowClone only sees one external SSD. Create a `.flowimg` migration
+            image now, then restore it to a new SSD later. This Phase 1 action is
+            mocked and does not write a real image file.
+          </p>
+          <Button className="mt-4" onClick={startImageMigration}>
+            Choose Image Location
+          </Button>
+        </motion.section>
       )}
 
       {target && !tooSmall && !sameDisk && (

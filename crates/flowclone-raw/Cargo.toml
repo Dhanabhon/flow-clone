@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "FlowClone raw read/write engine"
+description = "FlowClone stub raw clone engine"
 
 [dependencies]
 anyhow = { workspace = true }

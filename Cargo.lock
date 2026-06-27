@@ -783,15 +783,7 @@ name = "flowclone-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "flowclone-core",
  "flowclone-disk",
- "flowclone-raw",
- "flowclone-report",
- "flowclone-verify",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

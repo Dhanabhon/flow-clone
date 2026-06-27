@@ -27,7 +27,11 @@ pub fn run() {
         .manage(Arc::new(engine))
         .invoke_handler(tauri::generate_handler![
             commands::list_disks,
-            commands::start_clone,
+            commands::validate_clone_plan,
+            commands::start_clone_stub,
+            commands::create_image_stub,
+            commands::restore_image_stub,
+            commands::generate_report_stub,
             commands::cancel_clone,
         ])
         .setup(|app| {

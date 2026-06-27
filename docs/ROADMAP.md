@@ -1,20 +1,21 @@
-# FlowClone — Roadmap
+# FlowClone - Roadmap
 
 ## MVP (current)
 
-Goal: a calm, trustworthy single-disk clone on macOS, end to end.
+Goal: a calm, trustworthy mocked SSD migration flow on macOS.
 
 - [x] Monorepo scaffold (Rust workspace + Tauri v2 + React)
-- [x] `flowclone-disk` macOS discovery via `diskutil`
-- [x] `flowclone-raw` block read/write engine + buffer pool + throttle
-- [x] `flowclone-verify` SHA-256 block comparison
-- [x] `flowclone-report` Markdown + JSON export
+- [x] `flowclone-disk` mock disk discovery
+- [x] `flowclone-raw` stub progress engine
+- [x] `flowclone-verify` stub verification result
+- [x] `flowclone-report` Markdown and JSON model
 - [x] `flowclone-core` orchestration, jobs, progress, validation
 - [x] Home screen (source/target selection, validation, warning banner)
-- [ ] Confirmation screen (typed ERASE confirmation, serial/capacity summary)
-- [ ] Cloning screen (circular progress, throughput, ETA, flow animation)
-- [ ] Verification screen (shield indicator, separate progress)
-- [ ] Success screen + report export
+- [x] Confirmation screen (typed ERASE confirmation, serial/capacity summary)
+- [x] Cloning screen (circular progress, throughput, ETA, flow animation)
+- [x] Completed screen and report preview
+- [x] Image Migration stub (`.flowimg` path selection)
+- [ ] Real report file export
 - [ ] Privileged helper for raw device access on macOS
 - [ ] Full `diskutil info -plist` parsing (model, serial, SMART health)
 
@@ -28,7 +29,7 @@ Goal: a calm, trustworthy single-disk clone on macOS, end to end.
 
 ## Phase 3 — Beyond MVP (from DESIGN.md)
 
-- Image file mode (clone to / restore from an image)
+- Real image file mode (clone to / restore from an image)
 - Clone queue
 - SMART disk health surface
 - Multi-pass / statistical verification modes

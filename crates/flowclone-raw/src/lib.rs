@@ -1,12 +1,7 @@
-//! FlowClone raw read/write engine.
+//! FlowClone raw clone engine.
 //!
-//! Owns the low-level byte stream from a source device to a target device.
-//! The engine:
-//!
-//! - reads from the raw source in fixed-size blocks (`reader`)
-//! - writes them to the raw target (`writer`)
-//! - reuses a small pool of buffers to avoid per-block allocation (`buffer`)
-//! - optionally caps throughput (`throttle`)
+//! Phase 1 is intentionally stubbed. The crate owns the progress model and the
+//! future raw I/O modules, but the default engine only simulates progress.
 //!
 //! Progress is reported via a caller-supplied [`ProgressSink`] so this crate
 //! stays free of any dependency on the core crate (the core adapts the sink to
@@ -88,24 +83,57 @@ pub trait RawEngine: Send + Sync {
     ) -> anyhow::Result<RawCopyResult>;
 }
 
-/// The default production raw engine.
+/// The default Phase 1 raw engine. It never opens or writes a device.
 pub struct DefaultRawEngine;
 
 impl RawEngine for DefaultRawEngine {
     fn copy(
         &self,
-        source: &str,
-        target: &str,
+        _source: &str,
+        _target: &str,
         total_bytes: u64,
         options: RawOptions,
         cancel: &Arc<AtomicBool>,
         sink: &dyn ProgressSink,
     ) -> anyhow::Result<RawCopyResult> {
-        copy_raw(source, target, total_bytes, options, cancel, sink)
+        let start = Instant::now();
+        let blocks = 12;
+        let bytes_per_tick = (total_bytes / blocks).max(options.block_size as u64);
+        let mut bytes_done = 0u64;
+
+        for block_index in 1..=blocks {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(RawError::Cancelled.into());
+            }
+
+            bytes_done = bytes_done.saturating_add(bytes_per_tick).min(total_bytes);
+            std::thread::sleep(Duration::from_millis(80));
+            sink.on_progress(RawProgress {
+                bytes_done,
+                bytes_total: total_bytes,
+                last_block_bytes: bytes_per_tick,
+                block_index,
+                elapsed_secs: start.elapsed().as_secs_f64(),
+            });
+        }
+
+        let elapsed_secs = start.elapsed().as_secs_f64();
+        let average_speed = if elapsed_secs > 0.0 {
+            (bytes_done as f64 / elapsed_secs) as u64
+        } else {
+            0
+        };
+
+        Ok(RawCopyResult {
+            bytes_copied: bytes_done,
+            elapsed_secs,
+            average_speed,
+            blocks,
+        })
     }
 }
 
-/// Construct the default raw engine.
+/// Construct the default stub raw engine.
 pub fn default_engine() -> DefaultRawEngine {
     DefaultRawEngine
 }
@@ -127,8 +155,9 @@ pub enum RawError {
     Cancelled,
 }
 
-/// Core copy loop. Opens the raw devices, then pumps blocks source → target
-/// while reporting progress and honouring cancellation.
+/// Future real copy loop. This is deliberately unused until the privileged
+/// helper and destructive-write gates are implemented.
+#[allow(dead_code)]
 fn copy_raw(
     source: &str,
     target: &str,

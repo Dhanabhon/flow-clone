@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "FlowClone — Safe SSD Cloning",
+        "title": "FlowClone - SSD Migration Assistant",
         "width": 900,
         "height": 640,
         "minWidth": 900,
@@ -37,7 +37,7 @@
       "icons/icon.png"
     ],
     "category": "Utility",
-    "shortDescription": "Safe SSD cloning for macOS",
-    "longDescription": "FlowClone is a single-purpose disk cloning application that guides you through source/target selection, raw cloning, verification, and report export."
+    "shortDescription": "Open-source SSD migration assistant for macOS",
+    "longDescription": "FlowClone guides SSD migration workflows with mock Direct Clone and Image Migration flows in Phase 1. It is not ready for real disk operations."
   }
 }

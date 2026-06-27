@@ -4,7 +4,7 @@ export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "flowclone-theme";
 
-/** First-run default: the user's OS preference, falling back to light. */
+/** First-run default: dark mode first. */
 function initialTheme(): Theme {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -12,9 +12,7 @@ function initialTheme(): Theme {
   } catch {
     // localStorage may be unavailable in some sandboxed contexts; ignore.
   }
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
+  return "dark";
 }
 
 interface ThemeState {

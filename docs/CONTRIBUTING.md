@@ -1,8 +1,8 @@
 # Contributing to FlowClone
 
 Thanks for helping make disk cloning safer. Before contributing, please read
-[`SAFETY.md`](./SAFETY.md) — FlowClone performs destructive operations, so
-changes to validation, the raw engine, or the privileged helper need extra care.
+[`SAFETY.md`](./SAFETY.md). Phase 1 is mock-only; any change that opens or
+writes real disks needs a separate safety review before it lands.
 
 ## Development setup
 
