@@ -22,6 +22,7 @@ interface FlowState {
   verify: boolean;
   report: string | null;
 
+  setMode: (mode: WorkflowMode) => void;
   setSource: (d: DiskInfo | null) => void;
   setTarget: (d: DiskInfo | null) => void;
   setImagePath: (path: string | null) => void;
@@ -35,7 +36,7 @@ interface FlowState {
 
 export const useFlowStore = create<FlowState>((set) => ({
   phase: "home",
-  mode: "clone",
+  mode: "image",
   source: null,
   target: null,
   imagePath: null,
@@ -44,6 +45,12 @@ export const useFlowStore = create<FlowState>((set) => ({
   verify: true,
   report: null,
 
+  setMode: (mode) =>
+    set((state) => ({
+      mode,
+      target: mode === "image" ? null : state.target,
+      imagePath: mode === "clone" ? null : state.imagePath,
+    })),
   setSource: (d) => set({ source: d }),
   setTarget: (d) => set({ target: d }),
   setImagePath: (path) => set({ imagePath: path }),
@@ -56,7 +63,7 @@ export const useFlowStore = create<FlowState>((set) => ({
   reset: () =>
     set({
       phase: "home",
-      mode: "clone",
+      mode: "image",
       source: null,
       target: null,
       imagePath: null,

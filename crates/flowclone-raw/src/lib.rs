@@ -14,9 +14,127 @@ pub mod writer;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const MIN_OUTPUT_RESERVE_BYTES: u64 = 1_000_000_000;
+const MAX_OUTPUT_RESERVE_BYTES: u64 = 20_000_000_000;
+const OUTPUT_RESERVE_DIVISOR: u64 = 50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputSpace {
+    pub required_bytes: u64,
+    pub reserve_bytes: u64,
+    pub available_bytes: u64,
+}
+
+/// Ensure an image output path has enough free space plus a small safety reserve.
+pub fn ensure_free_space_for_output(
+    output_path: impl AsRef<Path>,
+    required_bytes: u64,
+) -> anyhow::Result<OutputSpace> {
+    let output_path = output_path.as_ref();
+    let directory = output_directory(output_path)?;
+    let available_bytes =
+        available_space_bytes(directory)?.saturating_add(reclaimable_output_bytes(output_path));
+    check_output_space(required_bytes, available_bytes, directory)
+}
+
+fn output_directory(output_path: &Path) -> anyhow::Result<&Path> {
+    let directory = output_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if directory.exists() {
+        Ok(directory)
+    } else {
+        anyhow::bail!(
+            "image output folder does not exist: {}",
+            directory.display()
+        )
+    }
+}
+
+fn reclaimable_output_bytes(output_path: &Path) -> u64 {
+    std::fs::metadata(output_path)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+fn available_space_bytes(path: &Path) -> anyhow::Result<u64> {
+    let output = Command::new("df")
+        .args(["-P", "-k"])
+        .arg(path)
+        .output()
+        .map_err(|error| anyhow::anyhow!("failed to check free disk space: {error}"))?;
+    if !output.status.success() {
+        anyhow::bail!("failed to check free disk space for {}", path.display());
+    }
+    parse_df_available_kib(&String::from_utf8_lossy(&output.stdout)).map(|kib| kib * 1024)
+}
+
+fn parse_df_available_kib(output: &str) -> anyhow::Result<u64> {
+    let line = output
+        .lines()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("failed to parse free disk space"))?;
+    let available = line
+        .split_whitespace()
+        .nth(3)
+        .ok_or_else(|| anyhow::anyhow!("failed to parse free disk space"))?;
+    available
+        .parse::<u64>()
+        .map_err(|error| anyhow::anyhow!("failed to parse free disk space: {error}"))
+}
+
+fn check_output_space(
+    required_bytes: u64,
+    available_bytes: u64,
+    directory: &Path,
+) -> anyhow::Result<OutputSpace> {
+    let reserve_bytes = output_reserve_bytes(required_bytes);
+    let needed_bytes = required_bytes
+        .checked_add(reserve_bytes)
+        .ok_or_else(|| anyhow::anyhow!("image size is too large to validate"))?;
+    if available_bytes < needed_bytes {
+        anyhow::bail!(
+            "not enough space for image in {}: need {} plus {} reserve, available {}",
+            directory.display(),
+            format_bytes(required_bytes),
+            format_bytes(reserve_bytes),
+            format_bytes(available_bytes)
+        );
+    }
+    Ok(OutputSpace {
+        required_bytes,
+        reserve_bytes,
+        available_bytes,
+    })
+}
+
+fn output_reserve_bytes(required_bytes: u64) -> u64 {
+    (required_bytes / OUTPUT_RESERVE_DIVISOR)
+        .clamp(MIN_OUTPUT_RESERVE_BYTES, MAX_OUTPUT_RESERVE_BYTES)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[(&str, u64)] = &[
+        ("TB", 1_000_000_000_000),
+        ("GB", 1_000_000_000),
+        ("MB", 1_000_000),
+        ("KB", 1_000),
+    ];
+    for (unit, scale) in UNITS {
+        if bytes >= *scale {
+            return format!("{:.1} {unit}", bytes as f64 / *scale as f64);
+        }
+    }
+    format!("{bytes} B")
+}
 
 pub use buffer::BufferPool;
 pub use reader::RawReader;
@@ -247,5 +365,27 @@ mod tests {
     fn no_progress_sink_is_a_valid_sink() {
         fn _accepts(_: &dyn ProgressSink) {}
         _accepts(&NoProgress);
+    }
+
+    #[test]
+    fn parses_df_available_space() {
+        let output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s1 1000000 1000 998000 1% /tmp\n";
+
+        assert_eq!(parse_df_available_kib(output).unwrap(), 998000);
+    }
+
+    #[test]
+    fn output_reserve_is_clamped() {
+        assert_eq!(output_reserve_bytes(10_000_000), 1_000_000_000);
+        assert_eq!(output_reserve_bytes(500_000_000_000), 10_000_000_000);
+        assert_eq!(output_reserve_bytes(2_000_000_000_000), 20_000_000_000);
+    }
+
+    #[test]
+    fn rejects_output_without_reserve_space() {
+        let error = check_output_space(100_000_000_000, 101_000_000_000, Path::new("/tmp"))
+            .expect_err("space should be insufficient");
+
+        assert!(error.to_string().contains("not enough space for image"));
     }
 }

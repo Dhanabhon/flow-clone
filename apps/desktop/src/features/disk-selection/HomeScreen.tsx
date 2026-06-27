@@ -1,13 +1,20 @@
 import { useMemo } from "react";
+import type { ReactNode } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
+import { FileArchive, HardDrive, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DiskCard } from "@/components/flowclone/DiskCard";
 import { FlowArrow } from "@/components/flowclone/FlowArrow";
 import { useDisks } from "@/hooks/use-disks";
 import { useFlowStore } from "@/stores/flow-store";
 import { createImageStub, isTauriRuntime } from "@/lib/tauri";
-import { formatBytes } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
+import { cn, fileNameFromPath, formatBytes, formatDuration } from "@/lib/utils";
+import type { DiskInfo, Progress } from "@/lib/types";
+import appLogo from "@/assets/app-logo.png";
+
+const IMAGE_ESTIMATE_BYTES_PER_SEC = 300_000_000;
 
 /**
  * Screen 1 — Home. Two equal disk cards (source → target), a flow arrow, a
@@ -15,17 +22,25 @@ import { formatBytes } from "@/lib/utils";
  * disabled until selection + size validation pass.
  */
 export function HomeScreen() {
-  const { data: disks, isLoading } = useDisks();
+  const { t } = useI18n();
+  const { data: disks, error, isFetching, isLoading, refetch } = useDisks();
   const {
+    mode,
     source,
     target,
+    imagePath,
+    setMode,
     setSource,
     setTarget,
     setImagePath,
-    beginClone,
     setProgress,
+    beginClone,
     goTo,
   } = useFlowStore();
+  const selectableDisks = useMemo(
+    () => (disks ?? []).filter(isSelectableDisk),
+    [disks]
+  );
 
   const canStart = useMemo(() => {
     if (!source || !target) return false;
@@ -37,139 +52,357 @@ export function HomeScreen() {
     source && target && source.device_path === target.device_path;
   const tooSmall =
     source && target && target.total_bytes < source.total_bytes;
-  const showImageMigration = !isLoading && disks?.length === 1;
+  const isImageMode = mode === "image";
+  const imageSource =
+    source && isSelectableDisk(source)
+      ? source
+      : selectableDisks.length === 1
+        ? selectableDisks[0]
+        : null;
+
+  async function chooseImageLocation() {
+    const defaultImageName = defaultImageFileName();
+    const path = isTauriRuntime()
+      ? await save({
+          defaultPath: defaultImageName,
+          filters: [{ name: t("flowCloneImage"), extensions: ["flowimg"] }],
+        })
+      : window.prompt(t("saveImagePrompt"), defaultImageName);
+    if (path) {
+      setImagePath(path);
+    }
+  }
 
   async function startImageMigration() {
-    const selectedSource = source ?? disks?.[0];
-    if (!selectedSource) return;
+    if (!imageSource || !imagePath) return;
 
-    const imagePath = isTauriRuntime()
-      ? await save({
-          defaultPath: "migration.flowimg",
-          filters: [{ name: "FlowClone image", extensions: ["flowimg"] }],
-        })
-      : window.prompt("Save migration image as", "migration.flowimg");
-    if (!imagePath) return;
-
-    setSource(selectedSource);
-    setTarget(null);
-    setImagePath(imagePath);
-    const jobId = await createImageStub(selectedSource.device_path, imagePath);
-    beginClone(jobId, "image");
-    setProgress({
-      job_id: jobId,
-      phase: "completed",
-      fraction: 1,
-      bytes_done: selectedSource.total_bytes,
-      bytes_total: selectedSource.total_bytes,
-      read_speed: 0,
-      write_speed: 0,
-      elapsed_secs: 0.1,
-      eta_secs: 0,
-      current_operation: "Mock migration image created",
-    });
-    goTo("completed");
+    try {
+      setSource(imageSource);
+      setTarget(null);
+      const jobId = await createImageStub(imageSource.device_path, imagePath);
+      beginClone(jobId, "image");
+    } catch (err) {
+      setProgress(failedImageProgress(imageSource, err));
+      goTo("cloning");
+    }
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-content px-8 py-12">
+    <main className="mx-auto min-h-screen max-w-content px-8 pb-12 pt-24 sm:py-12">
       <header className="mb-12 text-center">
+        <img
+          src={appLogo}
+          alt="FlowClone"
+          className="mx-auto mb-5 h-20 w-20 rounded-button border border-border object-cover shadow-soft"
+        />
         <h1 className="text-4xl font-semibold tracking-tight">
-          Move everything. Lose nothing.
+          {t("homeTitle")}
         </h1>
         <p className="mx-auto mt-3 max-w-2xl text-lg text-muted">
-          A modern, open-source SSD migration assistant for macOS. Beautifully
-          simple, safe by design.
+          {t("homeSubtitle")}
         </p>
       </header>
 
+      <div className="mb-6 flex flex-wrap items-center justify-center gap-3">
+        <div className="inline-grid grid-cols-2 rounded-button border border-border bg-surface p-1 shadow-soft">
+          <ModeButton
+            active={mode === "image"}
+            icon={<FileArchive className="h-4 w-4" />}
+            label={t("imageMigrationMode")}
+            onClick={() => setMode("image")}
+          />
+          <ModeButton
+            active={mode === "clone"}
+            icon={<HardDrive className="h-4 w-4" />}
+            label={t("directCloneMode")}
+            onClick={() => setMode("clone")}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          title={t("refreshDisks")}
+          aria-label={t("refreshDisks")}
+          aria-busy={isFetching}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-button border border-border bg-surface text-muted shadow-soft transition hover:bg-elevated hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <RefreshCw
+            className={isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+            strokeWidth={2}
+          />
+        </button>
+      </div>
+
       {isLoading && (
-        <p className="text-center text-muted">Scanning for disks…</p>
+        <p className="text-center text-muted">{t("scanningDisks")}</p>
       )}
 
-      {!isLoading && disks?.length === 0 && (
+      {!isLoading && error && (
+        <div className="rounded-card border border-danger/30 bg-danger/10 p-8 text-center">
+          <p className="text-lg font-medium text-danger">{t("diskScanFailed")}</p>
+          <p className="mt-2 text-sm text-muted">{error.message}</p>
+          <Button className="mt-4" variant="secondary" onClick={() => refetch()}>
+            {t("refreshDisks")}
+          </Button>
+        </div>
+      )}
+
+      {!isLoading && !error && selectableDisks.length === 0 && (
         <EmptyState />
       )}
 
-      {disks && disks.length > 0 && (
+      {!error && selectableDisks.length > 0 && isImageMode && (
+        <div className="mx-auto max-w-xl">
+          <Slot
+            label={t("source")}
+            disks={selectableDisks}
+            selected={imageSource}
+            onSelect={setSource}
+            emptyText={t("connectDrives")}
+          />
+        </div>
+      )}
+
+      {!error && selectableDisks.length > 0 && !isImageMode && (
         <div className="grid grid-cols-1 items-center gap-6 lg:grid-cols-[1fr_auto_1fr]">
           <Slot
-            label="Source"
-            disks={disks}
+            label={t("source")}
+            disks={selectableDisks}
             selected={source}
             exclude={target?.device_path}
             onSelect={setSource}
+            emptyText={t("connectDrives")}
           />
 
           <FlowArrow active={!!source && !!target} />
 
           <Slot
-            label="Target"
-            disks={disks}
+            label={t("target")}
+            disks={selectableDisks}
             selected={target}
             exclude={source?.device_path}
             onSelect={setTarget}
+            emptyText={t("connectTargetDrive")}
           />
         </div>
       )}
 
-      {showImageMigration && (
-        <motion.section
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mt-8 rounded-card border border-primary/30 bg-primary/10 p-5 text-center"
-        >
-          <h2 className="text-lg font-semibold">Image Migration available</h2>
-          <p className="mx-auto mt-2 max-w-2xl text-sm text-muted">
-            FlowClone only sees one external SSD. Create a `.flowimg` migration
-            image now, then restore it to a new SSD later. This Phase 1 action is
-            mocked and does not write a real image file.
-          </p>
-          <Button className="mt-4" onClick={startImageMigration}>
-            Choose Image Location
-          </Button>
-        </motion.section>
+      {isImageMode && !error && selectableDisks.length > 0 && (
+        <ImageMigrationPanel
+          canCreate={!!imageSource && !!imagePath}
+          imagePath={imagePath}
+          source={imageSource}
+          onChooseLocation={chooseImageLocation}
+          onCreate={startImageMigration}
+        />
       )}
 
-      {target && !tooSmall && !sameDisk && (
+      {!isImageMode && target && !tooSmall && !sameDisk && (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           className="mt-8 rounded-input border border-warning/30 bg-warning/10 p-4 text-center text-sm text-warning"
         >
-          Target disk <strong>{target.device_path}</strong> will be completely
-          erased.
+          {t("targetWillBeErased", { path: target.device_path })}
         </motion.div>
       )}
 
-      {sameDisk && (
+      {!isImageMode && sameDisk && (
         <p className="mt-8 text-center text-sm text-danger">
-          Cannot clone to the same device.
+          {t("sameDiskError")}
         </p>
       )}
-      {tooSmall && (
+      {!isImageMode && tooSmall && (
         <p className="mt-8 text-center text-sm text-danger">
-          Target disk is smaller than the source disk.
+          {t("targetTooSmallError")}
         </p>
       )}
 
-      <div className="mt-8 flex justify-center">
-        <Button
-          size="lg"
-          className="w-full max-w-md"
-          disabled={!canStart}
-          onClick={() => goTo("confirmation")}
-        >
-          Start Clone
-        </Button>
-      </div>
+      {!isImageMode && (
+        <div className="mt-8 flex justify-center">
+          <Button
+            size="lg"
+            className="w-full max-w-md"
+            disabled={!canStart}
+            onClick={() => goTo("confirmation")}
+          >
+            {t("startClone")}
+          </Button>
+        </div>
+      )}
 
-      {source && target && (
+      {!isImageMode && source && target && (
         <p className="mt-3 text-center text-xs text-muted">
           {formatBytes(source.total_bytes)} → {formatBytes(target.total_bytes)}
         </p>
       )}
     </main>
+  );
+}
+
+function isSelectableDisk(disk: DiskInfo) {
+  return !disk.is_boot && !disk.read_only && disk.connection !== "internal";
+}
+
+function defaultImageFileName() {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const date = [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+  ].join("-");
+  const time = [
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds()),
+  ].join("-");
+  return `FlowClone-${date}_${time}.flowimg`;
+}
+
+function ModeButton({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-9 items-center justify-center gap-2 rounded-input px-4 text-sm font-medium transition",
+        active
+          ? "bg-primary text-white shadow-soft"
+          : "text-muted hover:bg-elevated hover:text-text"
+      )}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ImageMigrationPanel({
+  canCreate,
+  imagePath,
+  source,
+  onChooseLocation,
+  onCreate,
+}: {
+  canCreate: boolean;
+  imagePath: string | null;
+  source: DiskInfo | null;
+  onChooseLocation: () => void;
+  onCreate: () => void;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mx-auto mt-8 max-w-3xl rounded-card border border-border bg-surface p-6 shadow-soft"
+    >
+      <h2 className="text-center text-lg font-semibold">
+        {t("imageMigrationTitle")}
+      </h2>
+      <p className="mx-auto mt-2 max-w-2xl text-center text-sm text-muted">
+        {t("imageMigrationBody")}
+      </p>
+
+      <div className="mt-6 grid gap-3 md:grid-cols-2">
+        <StepBlock
+          index="1"
+          title={t("imageSourceStep")}
+          body={t("imageSourceStepBody")}
+        />
+        <StepBlock
+          index="2"
+          title={t("imageDestinationStep")}
+          body={
+            imagePath
+              ? fileNameFromPath(imagePath, "migration.flowimg")
+              : t("imageDestinationEmpty")
+          }
+          emphasized={!!imagePath}
+        />
+      </div>
+      {source && (
+        <p className="mt-4 text-center text-xs text-muted">
+          {t("imageEstimatedTime", {
+            duration: estimateImageDuration(source.total_bytes),
+          })}
+        </p>
+      )}
+
+      <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
+        <Button variant="secondary" onClick={onChooseLocation}>
+          {imagePath ? t("chooseDifferentLocation") : t("chooseImageLocation")}
+        </Button>
+        <Button disabled={!canCreate} onClick={onCreate}>
+          {t("createMigrationImage")}
+        </Button>
+      </div>
+    </motion.section>
+  );
+}
+
+function estimateImageDuration(bytes: number) {
+  return formatDuration(bytes / IMAGE_ESTIMATE_BYTES_PER_SEC);
+}
+
+function failedImageProgress(source: DiskInfo, err: unknown): Progress {
+  return {
+    job_id: `image-preflight-${Date.now()}`,
+    phase: "failed",
+    fraction: 0,
+    bytes_done: 0,
+    bytes_total: source.total_bytes,
+    read_speed: 0,
+    write_speed: 0,
+    elapsed_secs: 0,
+    eta_secs: null,
+    current_operation: err instanceof Error ? err.message : String(err),
+  };
+}
+
+function StepBlock({
+  index,
+  title,
+  body,
+  emphasized,
+}: {
+  index: string;
+  title: string;
+  body: string;
+  emphasized?: boolean;
+}) {
+  return (
+    <div className="rounded-input border border-border bg-background p-4">
+      <div className="flex items-start gap-3">
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary text-sm font-semibold text-white">
+          {index}
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">{title}</h3>
+          <p
+            className={cn(
+              "mt-1 break-words text-sm",
+              emphasized ? "font-medium text-text" : "text-muted"
+            )}
+          >
+            {body}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -180,13 +413,17 @@ function Slot({
   selected,
   exclude,
   onSelect,
+  emptyText,
 }: {
   label: string;
-  disks: import("@/lib/types").DiskInfo[];
-  selected: import("@/lib/types").DiskInfo | null;
+  disks: DiskInfo[];
+  selected: DiskInfo | null;
   exclude?: string;
-  onSelect: (d: import("@/lib/types").DiskInfo | null) => void;
+  onSelect: (d: DiskInfo | null) => void;
+  emptyText: string;
 }) {
+  const available = disks.filter((d) => d.device_path !== exclude);
+
   return (
     <section>
       <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-muted">
@@ -200,9 +437,12 @@ function Slot({
         />
       ) : (
         <div className="flex flex-col gap-3">
-          {disks
-            .filter((d) => d.device_path !== exclude)
-            .map((d) => (
+          {available.length === 0 ? (
+            <div className="rounded-card border border-dashed border-border bg-surface p-8 text-center text-sm text-muted">
+              {emptyText}
+            </div>
+          ) : (
+            available.map((d) => (
               <DiskCard
                 key={d.device_path}
                 disk={d}
@@ -210,7 +450,8 @@ function Slot({
                 disabled={d.is_boot || d.read_only}
                 onSelect={() => onSelect(d)}
               />
-            ))}
+            ))
+          )}
         </div>
       )}
     </section>
@@ -218,10 +459,12 @@ function Slot({
 }
 
 function EmptyState() {
+  const { t } = useI18n();
+
   return (
     <div className="rounded-card border border-dashed border-border bg-surface p-16 text-center">
-      <p className="text-lg font-medium">No drives connected.</p>
-      <p className="mt-1 text-muted">Connect your SSDs to begin.</p>
+      <p className="text-lg font-medium">{t("noDrives")}</p>
+      <p className="mt-1 text-muted">{t("connectDrives")}</p>
     </div>
   );
 }

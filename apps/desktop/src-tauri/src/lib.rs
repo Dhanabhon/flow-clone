@@ -6,7 +6,7 @@
 mod commands;
 
 use flowclone_core::CloneEngine;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(debug_assertions)]
 use tauri::Manager;
 
@@ -19,20 +19,24 @@ pub fn run() {
         .init();
 
     let engine = CloneEngine::new();
+    let image_cancel: commands::ImageCancelState = Arc::new(Mutex::new(None));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(engine))
+        .manage(image_cancel)
         .invoke_handler(tauri::generate_handler![
             commands::list_disks,
             commands::validate_clone_plan,
             commands::start_clone_stub,
             commands::create_image_stub,
+            commands::validate_image_stub,
             commands::restore_image_stub,
             commands::generate_report_stub,
             commands::cancel_clone,
+            commands::open_full_disk_access_settings,
         ])
         .setup(|app| {
             // DevTools are disabled in release builds by default: the `devtools`

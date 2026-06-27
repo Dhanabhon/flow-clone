@@ -1,0 +1,252 @@
+import { useLocaleStore, type Locale } from "@/stores/locale-store";
+
+export const localeOptions = [
+  { value: "en", label: "English" },
+  { value: "th", label: "ไทย" },
+] as const satisfies readonly {
+  value: Locale;
+  label: string;
+}[];
+
+const en = {
+  langToggle: "Switch language",
+  themeToggle: "Toggle dark mode",
+
+  homeTitle: "Move everything. Lose nothing.",
+  homeSubtitle:
+    "A modern, open-source SSD migration assistant for macOS. Beautifully simple, safe by design.",
+  refreshDisks: "Refresh disks",
+  directCloneMode: "Direct Clone",
+  imageMigrationMode: "Image Migration",
+  scanningDisks: "Scanning for disks...",
+  diskScanFailed: "Could not scan disks.",
+  source: "Source",
+  target: "Target",
+  image: "Image",
+  imageMigrationTitle: "Image Migration available",
+  imageMigrationBody:
+    "Create a `.flowimg` image from this SSD, then restore it to a new SSD later. The image includes raw disk data and can be as large as the source SSD.",
+  imageSourceStep: "Select source SSD",
+  imageSourceStepBody: "Use the connected external SSD as the migration source.",
+  imageDestinationStep: "Choose image location",
+  imageDestinationEmpty: "No `.flowimg` location selected yet.",
+  imageEstimatedTime: "Estimated image time: {duration} with typical USB speed.",
+  chooseImageLocation: "Choose Image Location",
+  chooseDifferentLocation: "Choose Different Location",
+  createMigrationImage: "Create Image",
+  targetWillBeErased: "Target disk {path} will be completely erased.",
+  sameDiskError: "Cannot clone to the same device.",
+  targetTooSmallError: "Target disk is smaller than the source disk.",
+  startClone: "Start Clone",
+  noDrives: "No drives connected.",
+  connectDrives: "Connect your SSDs to begin.",
+  connectTargetDrive: "Connect a target SSD to continue.",
+  saveImagePrompt: "Save migration image as",
+  flowCloneImage: "FlowClone image",
+  mockImageCreated: "Migration image workflow ready",
+
+  healthy: "Healthy",
+  readOnly: "Read Only",
+  encrypted: "Encrypted",
+  unknown: "Unknown",
+  capacity: "Capacity",
+  filesystem: "Filesystem",
+  connection: "Connection",
+  serial: "Serial",
+  used: "used",
+  thunderbolt: "Thunderbolt",
+  internal: "Internal",
+  firewire: "FireWire",
+  network: "Network",
+
+  readyToClone: "Ready to Clone",
+  eraseWarning:
+    "All data on the target disk will be erased and cannot be recovered. Phase 1 is mocked and will not write to any disk.",
+  typeErase: "Type ERASE to continue.",
+  verifyAfterCloning: "Verify after cloning",
+  cancel: "Cancel",
+  clone: "Clone",
+  cloningTitle: "Cloning in progress...",
+  cloningHelp: "Please do not disconnect the drives.",
+  creatingImageTitle: "Creating migration image...",
+  creatingImageHelp: "Keep the source SSD connected until this workflow finishes.",
+  diskAccessRequiredTitle: "Disk Access Required",
+  diskAccessRequiredBody:
+    "macOS blocked raw disk access. Open Full Disk Access, allow your dev terminal or packaged FlowClone app, then check again.",
+  diskAccessDevHelp:
+    "During development, use the copied CLI command from a terminal that has Full Disk Access.",
+  imageFailedTitle: "Image Migration Failed",
+  cloneFailedTitle: "Clone Failed",
+  workflowFailedHelp: "Review the error below, then go back and try again.",
+  notEnoughSpaceTitle: "Not Enough Space",
+  notEnoughSpaceBody:
+    "FlowClone needs more free space before it can create this image safely.",
+  notEnoughSpaceSuggestion:
+    "Choose another save location or free up space before trying again.",
+  imageSize: "Image Size",
+  safetyReserve: "Safety Reserve",
+  availableSpace: "Available",
+  openFullDiskAccess: "Open Full Disk Access",
+  checkAgain: "Check Again",
+  copyCliCommand: "Copy CLI Command",
+  cliCommandCopied: "Copied",
+  readSpeed: "Read Speed",
+  writeSpeed: "Write Speed",
+  elapsed: "Elapsed",
+  remaining: "Remaining",
+  preparingClone: "Preparing clone",
+  preparingImage: "Preparing image",
+  copyingMockBlock: "Copying mock block {step} to {targetPath}",
+  creatingImageBlock: "Creating image block {step} to {imagePath}",
+  imageReadyAt: "Image workflow ready at {path}",
+  imageMigrationReady: "Image Migration Ready",
+  cloneCompleted: "Clone Completed",
+  imageCompletedBody: "A `.flowimg` image file was saved with raw source disk data. Restore support is ready for the next SSD.",
+  imageVerifying: "Verifying image file...",
+  imageVerified: "Image file verified: {model}, {size}.",
+  imageVerifyFailed: "Image file verification failed: {message}",
+  cloneCompletedBody: "Your stub clone completed and verification passed.",
+  averageSpeed: "Average Speed",
+  totalTime: "Total Time",
+  verification: "Verification",
+  restore: "Restore",
+  passed: "Passed",
+  ready: "Ready",
+  stubbed: "Stubbed",
+  exportReport: "Export Report",
+  reportSaved: "Report saved to {path}",
+  reportExportFailed: "Could not export report: {message}",
+  done: "Done",
+  chooseDisksFirst: "Choose source and target disks first.",
+  back: "Back",
+} as const;
+
+type MessageKey = keyof typeof en;
+
+const th: Record<MessageKey, string> = {
+  langToggle: "เปลี่ยนภาษา",
+  themeToggle: "สลับโหมดมืด",
+
+  homeTitle: "ย้ายทุกอย่าง ไม่เสียอะไรเลย",
+  homeSubtitle:
+    "ผู้ช่วยย้ายข้อมูล SSD สำหรับ macOS แบบโอเพนซอร์ส ใช้ง่ายและออกแบบมาให้ปลอดภัย",
+  refreshDisks: "รีเฟรชดิสก์",
+  directCloneMode: "Clone โดยตรง",
+  imageMigrationMode: "สร้างอิมเมจ",
+  scanningDisks: "กำลังค้นหาดิสก์...",
+  diskScanFailed: "ค้นหาดิสก์ไม่สำเร็จ",
+  source: "ต้นทาง",
+  target: "ปลายทาง",
+  image: "อิมเมจ",
+  imageMigrationTitle: "พร้อมสร้างอิมเมจสำหรับย้ายข้อมูล",
+  imageMigrationBody:
+    "สร้างไฟล์อิมเมจ `.flowimg` จาก SSD ลูกนี้ แล้วนำไปกู้คืนลง SSD ใหม่ภายหลังได้ ไฟล์นี้มีข้อมูลดิบของดิสก์และอาจมีขนาดเท่ากับ SSD ต้นทาง",
+  imageSourceStep: "เลือก SSD ต้นทาง",
+  imageSourceStepBody: "ใช้ SSD ภายนอกที่เชื่อมต่ออยู่เป็นต้นทางสำหรับสร้างอิมเมจ",
+  imageDestinationStep: "เลือกตำแหน่งอิมเมจ",
+  imageDestinationEmpty: "ยังไม่ได้เลือกตำแหน่งไฟล์ `.flowimg`",
+  imageEstimatedTime: "เวลาสร้างอิมเมจโดยประมาณ: {duration} จากความเร็ว USB ทั่วไป",
+  chooseImageLocation: "เลือกตำแหน่งอิมเมจ",
+  chooseDifferentLocation: "เลือกตำแหน่งใหม่",
+  createMigrationImage: "สร้างอิมเมจ",
+  targetWillBeErased: "ดิสก์ปลายทาง {path} จะถูกลบข้อมูลทั้งหมด",
+  sameDiskError: "ไม่สามารถ clone ไปยังอุปกรณ์เดียวกันได้",
+  targetTooSmallError: "ดิสก์ปลายทางมีขนาดเล็กกว่าดิสก์ต้นทาง",
+  startClone: "เริ่ม Clone",
+  noDrives: "ยังไม่มีไดรฟ์ที่เชื่อมต่อ",
+  connectDrives: "เชื่อมต่อ SSD เพื่อเริ่มใช้งาน",
+  connectTargetDrive: "เชื่อมต่อ SSD ปลายทางเพื่อไปต่อ",
+  saveImagePrompt: "บันทึกอิมเมจสำหรับย้ายข้อมูลเป็น",
+  flowCloneImage: "อิมเมจ FlowClone",
+  mockImageCreated: "workflow สร้างอิมเมจพร้อมแล้ว",
+
+  healthy: "ปกติ",
+  readOnly: "อ่านอย่างเดียว",
+  encrypted: "เข้ารหัส",
+  unknown: "ไม่ทราบ",
+  capacity: "ความจุ",
+  filesystem: "ระบบไฟล์",
+  connection: "การเชื่อมต่อ",
+  serial: "ซีเรียล",
+  used: "ใช้แล้ว",
+  thunderbolt: "Thunderbolt",
+  internal: "ภายใน",
+  firewire: "FireWire",
+  network: "เครือข่าย",
+
+  readyToClone: "พร้อม Clone",
+  eraseWarning:
+    "ข้อมูลทั้งหมดบนดิสก์ปลายทางจะถูกลบและไม่สามารถกู้คืนได้ Phase 1 ยังเป็น mock และจะไม่เขียนข้อมูลลงดิสก์จริง",
+  typeErase: "พิมพ์ ERASE เพื่อดำเนินการต่อ",
+  verifyAfterCloning: "ตรวจสอบหลัง clone เสร็จ",
+  cancel: "ยกเลิก",
+  clone: "Clone",
+  cloningTitle: "กำลัง Clone...",
+  cloningHelp: "กรุณาอย่าถอดไดรฟ์ระหว่างทำงาน",
+  creatingImageTitle: "กำลังสร้างอิมเมจสำหรับย้ายข้อมูล...",
+  creatingImageHelp: "เชื่อมต่อ SSD ต้นทางไว้จนกว่า workflow นี้จะเสร็จ",
+  diskAccessRequiredTitle: "ต้องเปิดสิทธิ์เข้าถึงดิสก์",
+  diskAccessRequiredBody:
+    "macOS บล็อกการอ่านดิสก์แบบ raw ให้เปิด Full Disk Access แล้วอนุญาต Terminal ที่ใช้ dev หรือแอป FlowClone ที่ package แล้ว จากนั้นกดตรวจสอบอีกครั้ง",
+  diskAccessDevHelp:
+    "ระหว่าง development ให้คัดลอกคำสั่ง CLI นี้ไปรันใน Terminal ที่มี Full Disk Access",
+  imageFailedTitle: "สร้างอิมเมจไม่สำเร็จ",
+  cloneFailedTitle: "Clone ไม่สำเร็จ",
+  workflowFailedHelp: "ตรวจสอบ error ด้านล่าง แล้วกลับไปลองใหม่อีกครั้ง",
+  notEnoughSpaceTitle: "พื้นที่ไม่พอ",
+  notEnoughSpaceBody:
+    "FlowClone ต้องการพื้นที่ว่างเพิ่มก่อนสร้างอิมเมจ เพื่อป้องกันไม่ให้ดิสก์เครื่องเต็มพอดีเกินไป",
+  notEnoughSpaceSuggestion:
+    "เลือกตำแหน่งบันทึกอื่น หรือเพิ่มพื้นที่ว่างแล้วลองใหม่อีกครั้ง",
+  imageSize: "ขนาดอิมเมจ",
+  safetyReserve: "พื้นที่เผื่อ",
+  availableSpace: "พื้นที่ว่าง",
+  openFullDiskAccess: "เปิด Full Disk Access",
+  checkAgain: "ตรวจสอบอีกครั้ง",
+  copyCliCommand: "คัดลอกคำสั่ง CLI",
+  cliCommandCopied: "คัดลอกแล้ว",
+  readSpeed: "ความเร็วอ่าน",
+  writeSpeed: "ความเร็วเขียน",
+  elapsed: "เวลาที่ใช้",
+  remaining: "เวลาที่เหลือ",
+  preparingClone: "กำลังเตรียม clone",
+  preparingImage: "กำลังเตรียมอิมเมจ",
+  copyingMockBlock: "กำลังคัดลอก mock block {step} ไปยัง {targetPath}",
+  creatingImageBlock: "กำลังสร้าง image block {step} ไปยัง {imagePath}",
+  imageReadyAt: "workflow อิมเมจพร้อมแล้วที่ {path}",
+  imageMigrationReady: "อิมเมจสำหรับย้ายข้อมูลพร้อมแล้ว",
+  cloneCompleted: "Clone เสร็จแล้ว",
+  imageCompletedBody: "บันทึกไฟล์อิมเมจ `.flowimg` พร้อมข้อมูลดิบจากดิสก์ต้นทางแล้ว พร้อมสำหรับกู้คืนลง SSD ลูกถัดไป",
+  imageVerifying: "กำลังตรวจสอบไฟล์อิมเมจ...",
+  imageVerified: "ตรวจสอบไฟล์อิมเมจแล้ว: {model}, {size}",
+  imageVerifyFailed: "ตรวจสอบไฟล์อิมเมจไม่สำเร็จ: {message}",
+  cloneCompletedBody: "mock clone เสร็จแล้วและตรวจสอบผ่าน",
+  averageSpeed: "ความเร็วเฉลี่ย",
+  totalTime: "เวลารวม",
+  verification: "การตรวจสอบ",
+  restore: "กู้คืน",
+  passed: "ผ่าน",
+  ready: "พร้อม",
+  stubbed: "Mock",
+  exportReport: "ส่งออกรายงาน",
+  reportSaved: "บันทึกรายงานแล้วที่ {path}",
+  reportExportFailed: "ส่งออกรายงานไม่สำเร็จ: {message}",
+  done: "เสร็จสิ้น",
+  chooseDisksFirst: "เลือกดิสก์ต้นทางและปลายทางก่อน",
+  back: "กลับ",
+};
+
+const messages: Record<Locale, Record<MessageKey, string>> = { en, th };
+
+export function useI18n() {
+  const locale = useLocaleStore((state) => state.locale);
+  const t = (key: MessageKey, values?: Record<string, string | number>) => {
+    let text = messages[locale][key];
+    if (!values) return text;
+    Object.entries(values).forEach(([name, value]) => {
+      text = text.replace(`{${name}}`, String(value));
+    });
+    return text;
+  };
+  return { locale, t };
+}

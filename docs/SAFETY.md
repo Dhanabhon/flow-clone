@@ -1,9 +1,10 @@
 # FlowClone - Safety Model
 
-FlowClone does not erase disks in Phase 1. Disk detection, cloning, image
-creation, restore, and verification are mocked. Every design decision below
-exists so the later real implementation has narrow safety gates before any
-write capability is added.
+FlowClone does not erase disks in Phase 1. Disk detection uses read-only macOS
+`diskutil` metadata by default; the deterministic mock catalog is still
+available for demos and tests. Restore, direct clone writes, and verification
+are mocked. Image creation is read-only, but macOS still requires elevated raw
+disk access to read `/dev/rdiskN`.
 
 ## Principles
 
@@ -21,7 +22,7 @@ A clone request is rejected if:
 
 - Source and target are the same device (`SameDevice`).
 - Target capacity is smaller than source (`TargetTooSmall`).
-- Source or target device path is not present in the current mock catalog
+- Source or target device path is not present in the current catalog
   (`SourceNotFound` / `TargetNotFound`).
 
 These are enforced **in Rust**, not TypeScript, so they cannot be skipped by a
@@ -29,9 +30,10 @@ UI bug or a modified client.
 
 ## Boot disk protection
 
-The mock disk catalog can flag a boot device (`is_boot`). The UI disables
-selecting it as a target. Real boot-disk enforcement belongs in the future
-platform catalog and core validator.
+The disk catalog can flag a boot device (`is_boot`). The UI disables selecting
+it as a target. The macOS catalog parses boot metadata from `diskutil info
+-plist`; core-level real boot-disk enforcement belongs with the future
+destructive-write safety gates.
 
 ## Cancellation
 
@@ -46,9 +48,10 @@ sampler exists for later, but the default verifier does not open devices.
 
 ## Privileged helper
 
-Raw writes to `/dev/rdiskN` require root/admin authorization on macOS. The
-privileged helper (`native/macos-helper`) is not implemented yet. It will be the
-only component allowed to hold that capability.
+Raw reads and writes to `/dev/rdiskN` require root/admin authorization on macOS.
+The production privileged helper (`native/macos-helper`) is not implemented yet.
+Until then, raw image testing uses the CLI under `sudo`; the desktop GUI must
+not be run as root.
 
 ## What is explicitly out of scope
 
@@ -59,5 +62,6 @@ only component allowed to hold that capability.
 
 ## Reporting
 
-Every completed stub job can generate a report preview. Real report writing
-will be wired once real clone and image workflows exist.
+Every completed job can generate a report preview and export it as a Markdown
+file. Restore and direct clone reports still describe mocked workflows until
+real write paths exist.

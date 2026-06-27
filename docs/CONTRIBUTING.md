@@ -1,8 +1,9 @@
 # Contributing to FlowClone
 
 Thanks for helping make disk cloning safer. Before contributing, please read
-[`SAFETY.md`](./SAFETY.md). Phase 1 is mock-only; any change that opens or
-writes real disks needs a separate safety review before it lands.
+[`SAFETY.md`](./SAFETY.md). Phase 1 only reads disk metadata; any change that
+opens raw devices or writes real disks needs a separate safety review before it
+lands.
 
 ## Development setup
 

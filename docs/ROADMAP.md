@@ -2,10 +2,11 @@
 
 ## MVP (current)
 
-Goal: a calm, trustworthy mocked SSD migration flow on macOS.
+Goal: a calm, trustworthy SSD migration flow on macOS with real read-only disk
+discovery and mocked writes.
 
 - [x] Monorepo scaffold (Rust workspace + Tauri v2 + React)
-- [x] `flowclone-disk` mock disk discovery
+- [x] `flowclone-disk` read-only macOS disk discovery
 - [x] `flowclone-raw` stub progress engine
 - [x] `flowclone-verify` stub verification result
 - [x] `flowclone-report` Markdown and JSON model
@@ -15,9 +16,9 @@ Goal: a calm, trustworthy mocked SSD migration flow on macOS.
 - [x] Cloning screen (circular progress, throughput, ETA, flow animation)
 - [x] Completed screen and report preview
 - [x] Image Migration stub (`.flowimg` path selection)
-- [ ] Real report file export
+- [x] Real report file export
 - [ ] Privileged helper for raw device access on macOS
-- [ ] Full `diskutil info -plist` parsing (model, serial, SMART health)
+- [x] Full `diskutil info -plist` parsing (model, serial, SMART health)
 
 ## Phase 2 — Polish & reliability
 

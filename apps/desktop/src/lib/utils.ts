@@ -33,3 +33,14 @@ export function formatDuration(secs: number): string {
   if (m === 0) return `${r}s`;
   return `${m}m ${r}s`;
 }
+
+/** Return the display name for a local path without exposing the full path. */
+export function fileNameFromPath(
+  path: string | null | undefined,
+  fallback = ""
+): string {
+  const trimmed = path?.trim();
+  if (!trimmed) return fallback;
+  const name = trimmed.replace(/\\/g, "/").split("/").filter(Boolean).pop();
+  return name ?? fallback;
+}

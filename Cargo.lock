@@ -784,6 +784,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "flowclone-disk",
+ "flowclone-raw",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -808,6 +811,7 @@ version = "0.1.0"
 dependencies = [
  "flowclone-core",
  "flowclone-disk",
+ "flowclone-raw",
  "flowclone-report",
  "flowclone-verify",
  "serde",
@@ -827,6 +831,7 @@ name = "flowclone-disk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "plist",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

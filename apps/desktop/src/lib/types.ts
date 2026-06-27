@@ -33,6 +33,14 @@ export interface DiskInfo {
   volume_name: string | null;
 }
 
+export interface ImageValidation {
+  format: string;
+  version: number;
+  source: DiskInfo;
+  payload_bytes: number;
+  note: string | null;
+}
+
 export type Phase =
   | "preparing"
   | "cloning"

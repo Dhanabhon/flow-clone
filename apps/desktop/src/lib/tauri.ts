@@ -1,6 +1,9 @@
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { DiskInfo, Progress } from "./types";
+import type { DiskInfo, ImageValidation, Progress } from "./types";
+import { fileNameFromPath } from "./utils";
 
 /**
  * Strongly-typed wrappers around the Tauri commands defined in
@@ -44,6 +47,7 @@ const mockDisks: DiskInfo[] = [
 ];
 
 const browserProgress = new Set<(p: Progress) => void>();
+let browserCancelRequested = false;
 
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -117,6 +121,13 @@ export const restoreImageStub = (
       })
     : Promise.resolve(`restore-${Date.now()}`);
 
+export const validateImageStub = (
+  imagePath: string
+): Promise<ImageValidation> =>
+  isTauriRuntime()
+    ? invoke<ImageValidation>("validate_image_stub", { imagePath })
+    : Promise.resolve(validateBrowserImageStub(imagePath));
+
 export const generateReportStub = (
   sourcePath: string,
   targetPath?: string,
@@ -129,12 +140,65 @@ export const generateReportStub = (
         imagePath,
       })
     : Promise.resolve(
-        `# FlowClone report\n\n- Source: ${sourcePath}\n- Target: ${
-          targetPath ?? "none"
-        }\n- Image: ${imagePath ?? "none"}\n- Mode: mocked Phase 1 workflow\n`
+        imagePath
+          ? `# FlowClone image migration report\n\n- Source: ${sourcePath}\n- Image: ${imagePath}\n- Mode: Image Migration preview\n- Result: completed\n- Restore: ready for a future target SSD\n`
+          : `# FlowClone direct clone report\n\n- Source: ${sourcePath}\n- Target: ${
+              targetPath ?? "none"
+            }\n- Mode: Direct Clone preview\n- Result: completed\n`
       );
 
-export const cancelClone = (): Promise<void> => invoke("cancel_clone");
+export async function saveReportFile(text: string): Promise<string | null> {
+  const defaultPath = `flowclone-report-${new Date().toISOString().slice(0, 10)}.md`;
+
+  if (isTauriRuntime()) {
+    const path = await save({
+      defaultPath,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!path) return null;
+    await writeTextFile(path, text);
+    return path;
+  }
+
+  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = defaultPath;
+  anchor.click();
+  URL.revokeObjectURL(url);
+  return defaultPath;
+}
+
+export const cancelClone = (): Promise<void> => {
+  if (isTauriRuntime()) return invoke("cancel_clone");
+  browserCancelRequested = true;
+  return Promise.resolve();
+};
+
+export function openFullDiskAccessSettings(): Promise<void> {
+  if (isTauriRuntime()) return invoke("open_full_disk_access_settings");
+  window.location.assign(
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+  );
+  return Promise.resolve();
+}
+
+export async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard is not available.");
+}
 
 /** Subscribe to clone progress events emitted by the core. */
 export function onProgress(cb: (p: Progress) => void): Promise<UnlistenFn> {
@@ -186,5 +250,66 @@ function createBrowserImageStub(sourcePath: string, imagePath: string): string {
   const source = browserDisks().find((disk) => disk.device_path === sourcePath);
   if (!source) throw new Error(`source not found: ${sourcePath}`);
   if (!imagePath.trim()) throw new Error("image path is required");
-  return `image-${Date.now()}`;
+  const jobId = `image-${Date.now()}`;
+  const total = source.total_bytes;
+  browserCancelRequested = false;
+
+  Array.from({ length: 10 }, (_, i) => i + 1).forEach((step) => {
+    window.setTimeout(() => {
+      if (browserCancelRequested) return;
+      const fraction = step / 10;
+      if (step === 10) {
+        downloadBrowserImageStub(imagePath, source);
+      }
+      emitBrowserProgress({
+        job_id: jobId,
+        phase: step === 10 ? "completed" : "cloning",
+        fraction,
+        bytes_done: Math.round(total * fraction),
+        bytes_total: total,
+        read_speed: 520_000_000,
+        write_speed: 480_000_000,
+        elapsed_secs: step * 0.18,
+        eta_secs: step === 10 ? 0 : (10 - step) * 0.18,
+        current_operation:
+          step === 10
+            ? `Image workflow ready at ${imagePath}`
+            : `Creating image block ${step} to ${imagePath}`,
+      });
+    }, step * 180);
+  });
+
+  return jobId;
+}
+
+function downloadBrowserImageStub(imagePath: string, source: DiskInfo) {
+  const contents = JSON.stringify(
+    {
+      format: "flowclone-stub-image",
+      version: 1,
+      source,
+      note: "Preview file only. No disk data has been copied.",
+    },
+    null,
+    2
+  );
+  const url = URL.createObjectURL(
+    new Blob([contents], { type: "application/json" })
+  );
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileNameFromPath(imagePath, "migration.flowimg");
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function validateBrowserImageStub(imagePath: string): ImageValidation {
+  if (!imagePath.trim()) throw new Error("image path is required");
+  return {
+    format: "flowclone-stub-image",
+    version: 1,
+    source: browserDisks()[0],
+    payload_bytes: 0,
+    note: "Preview file only. No disk data has been copied.",
+  };
 }

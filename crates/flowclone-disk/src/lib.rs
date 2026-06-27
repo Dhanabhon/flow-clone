@@ -1,8 +1,8 @@
 //! FlowClone disk discovery & metadata.
 //!
-//! Phase 1 uses a mock [`DiskCatalog`] so FlowClone never touches real disks.
-//! Platform-specific backends live in [`macos`], [`windows`], and [`linux`] for
-//! the later privileged-access phase.
+//! On macOS the default [`DiskCatalog`] reads disk metadata through `diskutil`.
+//! Clone, image, and restore operations still live behind separate safety
+//! gates; this crate only enumerates disks.
 
 pub mod linux;
 pub mod macos;
@@ -44,15 +44,33 @@ pub struct DiskCatalog(pub Arc<dyn DiskCatalogApi>);
 impl DiskCatalog {
     /// Pick the current backend.
     ///
-    /// TODO: replace this mock catalog with the platform backend once the
-    /// privileged macOS helper and destructive-write safety gates are ready.
+    /// macOS uses read-only `diskutil` discovery by default. Set
+    /// `FLOWCLONE_DISK_BACKEND=mock` to force the deterministic demo catalog.
     pub fn platform_default() -> Self {
-        Self::mock()
+        match std::env::var("FLOWCLONE_DISK_BACKEND") {
+            Ok(value) if value == "mock" => return Self::mock(),
+            Ok(value) if !value.is_empty() => {
+                tracing::warn!(%value, "unknown FLOWCLONE_DISK_BACKEND; using platform default");
+            }
+            _ => {}
+        }
+
+        Self::platform_catalog()
     }
 
-    /// Mock disk catalog used by the MVP.
+    /// Deterministic demo catalog.
     pub fn mock() -> Self {
         Self(Arc::new(MockCatalog))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn platform_catalog() -> Self {
+        Self(Arc::new(macos::MacosCatalog::new()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn platform_catalog() -> Self {
+        Self::mock()
     }
 }
 

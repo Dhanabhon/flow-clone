@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 flowclone-core = { workspace = true }
 flowclone-disk = { workspace = true }
+flowclone-raw = { workspace = true }
 flowclone-verify = { workspace = true }
 flowclone-report = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }

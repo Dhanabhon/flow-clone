@@ -21,7 +21,7 @@
     │               │                  │              │
     ▼               ▼                  ▼              ▼
  flowclone-disk  flowclone-raw   flowclone-verify  flowclone-report
- mock catalog    stub progress   stub result       markdown/json
+ disk catalog    stub progress   stub result       markdown/json
 ```
 
 ## Why this layering
@@ -46,16 +46,16 @@ not. The architecture already keeps unsafe states narrow:
 | Crate | Responsibility |
 | --- | --- |
 | `flowclone-core` | Job lifecycle, validation, orchestration, progress events |
-| `flowclone-disk` | Mock disk discovery and metadata |
+| `flowclone-disk` | Read-only macOS disk discovery plus deterministic demo catalog |
 | `flowclone-raw` | Stub raw clone progress model |
 | `flowclone-verify` | Stub verification result model |
 | `flowclone-report` | Markdown and JSON report rendering |
-| `flowclone-cli` | CLI for printing detected mock disks |
+| `flowclone-cli` | CLI for printing the active disk catalog |
 | `flowclone-desktop` | Tauri v2 shell + command layer |
 
 ## Data flow for one clone
 
-1. UI calls `list_disks` and receives the mock disk catalog.
+1. UI calls `list_disks` and receives the active disk catalog.
 2. User picks source/target. UI validates locally (size, same-device).
 3. UI calls `validate_clone_plan`, then `start_clone_stub`.
 4. Core resolves `DiskInfo` from paths, builds a `CloneJob`, validates, and
