@@ -1,0 +1,45 @@
+# macOS
+.DS_Store
+
+# Node / pnpm
+node_modules/
+dist/
+dist-ssr/
+coverage/
+.vite/
+.turbo/
+*.local
+.pnpm-store/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# Rust / Cargo
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Tauri / build artifacts
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/dist/
+*.app
+*.dmg
+*.pkg
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS / misc
+Thumbs.db

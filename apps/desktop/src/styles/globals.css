@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Color tokens from DESIGN.md. Two themes are toggled via the `.dark`
+ * class on <html>. Tabular figures keep progress numbers from jumping.
+ */
+@layer base {
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --elevated: #ffffff;
+    --border: #e5e7eb;
+    --primary: #3b82f6;
+    --primary-glow: rgba(59, 130, 246, 0.25);
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --text: #111827;
+    --muted: #6b7280;
+  }
+
+  .dark {
+    --bg: #0f1115;
+    --surface: #171a21;
+    --elevated: #1d212a;
+    --border: #2a2f39;
+    --primary: #4f8cff;
+    --primary-glow: rgba(79, 140, 255, 0.25);
+    --success: #34d399;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --text: #f9fafb;
+    --muted: #9ca3af;
+  }
+
+  body {
+    @apply bg-background text-text font-sans antialiased;
+    font-feature-settings: "tnum" 1;
+  }
+}

@@ -1,0 +1,30 @@
+[package]
+name = "flowclone-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "FlowClone desktop app (Tauri v2)"
+
+[lib]
+name = "flowclone_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+flowclone-core = { workspace = true }
+flowclone-disk = { workspace = true }
+flowclone-verify = { workspace = true }
+flowclone-report = { workspace = true }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
