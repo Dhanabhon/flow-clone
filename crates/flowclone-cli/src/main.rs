@@ -15,8 +15,14 @@ const IMAGE_BLOCK_SIZE: usize = 4 * 1024 * 1024;
 const READ_RECOVERY_WAIT: Duration = Duration::from_secs(3);
 /// Attempts to re-find the disk after one drop before giving up on it.
 const MAX_READ_RECOVERY_ATTEMPTS: u32 = 20;
-/// Read failures with zero forward progress before declaring the disk unusable.
-const MAX_CONSECUTIVE_READ_FAILURES: u32 = 8;
+/// Re-read a failing offset this many times before declaring it a bad region and
+/// skipping it. Kept low so we don't hammer a bad block (which can wedge a USB
+/// bridge into not re-enumerating).
+const READ_RETRIES_BEFORE_SKIP: u32 = 1;
+/// Abort if more than this much is unreadable — the drive is too damaged to image.
+const MAX_BAD_REGION_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+/// Abort if there are more than this many distinct bad regions.
+const MAX_BAD_REGIONS: usize = 4096;
 
 fn main() -> Result<()> {
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "help".into());
@@ -123,24 +129,27 @@ fn remount_disk(device_path: &str) {
 /// reattach), reopen the raw device, and seek back to where the copy left off.
 fn reacquire_reader(source: &DiskInfo, offset: u64) -> Result<File> {
     for attempt in 1..=MAX_READ_RECOVERY_ATTEMPTS {
-        std::thread::sleep(READ_RECOVERY_WAIT);
-        eprintln!(
-            "recovery: waiting for the disk to reappear (attempt {attempt}/{MAX_READ_RECOVERY_ATTEMPTS})..."
-        );
-        let Some(disk) = find_source_again(source) else {
-            continue;
-        };
-        unmount_disk_quiet(&disk.device_path);
-        let raw = raw_device_path(&disk.device_path);
-        match File::open(&raw) {
-            Ok(mut reader) => match reader.seek(SeekFrom::Start(offset)) {
-                Ok(_) => {
-                    eprintln!("recovery: resumed on {raw} at {}", humansize(offset));
-                    return Ok(reader);
-                }
-                Err(error) => eprintln!("recovery: seek {raw} failed: {error}"),
-            },
-            Err(error) => eprintln!("recovery: open {raw} failed: {error}"),
+        // Try immediately first (the device may still be present, e.g. after a
+        // skip), then wait between subsequent attempts for it to re-enumerate.
+        if let Some(disk) = find_source_again(source) {
+            unmount_disk_quiet(&disk.device_path);
+            let raw = raw_device_path(&disk.device_path);
+            match File::open(&raw) {
+                Ok(mut reader) => match reader.seek(SeekFrom::Start(offset)) {
+                    Ok(_) => {
+                        eprintln!("recovery: resumed on {raw} at {}", humansize(offset));
+                        return Ok(reader);
+                    }
+                    Err(error) => eprintln!("recovery: seek {raw} failed: {error}"),
+                },
+                Err(error) => eprintln!("recovery: open {raw} failed: {error}"),
+            }
+        }
+        if attempt < MAX_READ_RECOVERY_ATTEMPTS {
+            eprintln!(
+                "recovery: waiting for the disk to reappear (attempt {attempt}/{MAX_READ_RECOVERY_ATTEMPTS})..."
+            );
+            std::thread::sleep(READ_RECOVERY_WAIT);
         }
     }
     anyhow::bail!("the disk did not come back after {MAX_READ_RECOVERY_ATTEMPTS} attempts")
@@ -202,7 +211,13 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
     let mut bytes_done = 0u64;
     let mut last_print = Instant::now();
 
-    let mut consecutive_failures = 0u32;
+    // Bad regions that stayed unreadable after retries. ddrescue-style: zero-fill
+    // and skip them so a single bad block doesn't abort the whole image, and skip
+    // fast so we don't hammer (re-reading a bad block can wedge a USB bridge).
+    let mut bad_regions: Vec<(u64, u64)> = Vec::new();
+    let mut bad_bytes = 0u64;
+    let mut retries_at_offset = 0u32;
+
     while bytes_done < source.total_bytes {
         if std::path::Path::new(&cancel_path).exists() {
             let _ = std::fs::remove_file(&partial_path);
@@ -210,59 +225,88 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
             anyhow::bail!("cancelled by user");
         }
         let remaining = (source.total_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
-        let read = match reader.read(&mut buf[..remaining]) {
-            Ok(read) => {
-                consecutive_failures = 0;
-                read
+        match reader.read(&mut buf[..remaining]) {
+            Ok(0) => {
+                anyhow::bail!(
+                    "source ended early: copied {bytes_done} of {} bytes",
+                    source.total_bytes
+                );
             }
-            // A flaky USB enclosure can disconnect mid-read (ENXIO). The device
-            // usually re-enumerates, so wait for it, reopen, seek back, and
-            // resume — rather than throwing away the whole copy.
+            Ok(read) => {
+                retries_at_offset = 0;
+                image.write_all(&buf[..read]).map_err(|error| {
+                    anyhow::anyhow!(
+                        "write image {partial_path} at source offset {} ({}): {error}",
+                        bytes_done,
+                        humansize(bytes_done)
+                    )
+                })?;
+                bytes_done += read as u64;
+
+                if last_print.elapsed().as_secs() >= 1 || bytes_done == source.total_bytes {
+                    eprintln!(
+                        "{}",
+                        progress_line(
+                            bytes_done,
+                            source.total_bytes,
+                            start.elapsed().as_secs_f64()
+                        )
+                    );
+                    last_print = Instant::now();
+                }
+            }
             Err(error) => {
-                consecutive_failures += 1;
                 eprintln!(
                     "read error at offset {} ({}): {error}",
                     bytes_done,
                     humansize(bytes_done)
                 );
-                if consecutive_failures > MAX_CONSECUTIVE_READ_FAILURES {
+                retries_at_offset += 1;
+                // The drive may have just dropped off the bus and re-enumerated;
+                // re-acquire and retry the same offset a small number of times.
+                if retries_at_offset <= READ_RETRIES_BEFORE_SKIP {
+                    reader = reacquire_reader(source, bytes_done)?;
+                    continue;
+                }
+                // Still unreadable: treat this block as a bad region. Zero-fill it,
+                // record it, and move on instead of aborting or hammering it.
+                buf[..remaining].fill(0);
+                image.write_all(&buf[..remaining]).map_err(|error| {
+                    anyhow::anyhow!("write zero-fill at offset {bytes_done}: {error}")
+                })?;
+                bad_regions.push((bytes_done, remaining as u64));
+                bad_bytes += remaining as u64;
+                eprintln!(
+                    "bad region: zero-filled {} at offset {} ({}) and continuing",
+                    humansize(remaining as u64),
+                    bytes_done,
+                    humansize(bytes_done)
+                );
+                bytes_done += remaining as u64;
+                retries_at_offset = 0;
+
+                if too_damaged(bad_bytes, bad_regions.len()) {
                     anyhow::bail!(
-                        "giving up: {} keeps dropping off the bus at offset {} ({}) with no progress. Try a different cable, a direct port (no hub), or another enclosure.",
-                        source.device_path,
-                        bytes_done,
-                        humansize(bytes_done)
+                        "drive too damaged: {} unreadable across {} regions — aborting",
+                        humansize(bad_bytes),
+                        bad_regions.len()
                     );
                 }
-                reader = reacquire_reader(source, bytes_done)?;
-                continue;
+                if bytes_done < source.total_bytes {
+                    reader = reacquire_reader(source, bytes_done)?;
+                }
             }
-        };
-        if read == 0 {
-            anyhow::bail!(
-                "source ended early: copied {bytes_done} of {} bytes",
-                source.total_bytes
-            );
         }
-        image.write_all(&buf[..read]).map_err(|error| {
-            anyhow::anyhow!(
-                "write image {partial_path} at source offset {} ({}): {error}",
-                bytes_done,
-                humansize(bytes_done)
-            )
-        })?;
-        bytes_done += read as u64;
+    }
 
-        if last_print.elapsed().as_secs() >= 1 || bytes_done == source.total_bytes {
-            eprintln!(
-                "{}",
-                progress_line(
-                    bytes_done,
-                    source.total_bytes,
-                    start.elapsed().as_secs_f64()
-                )
-            );
-            last_print = Instant::now();
-        }
+    if !bad_regions.is_empty() {
+        write_bad_region_log(image_path, &bad_regions);
+        eprintln!(
+            "WARNING: {} unreadable across {} region(s) were zero-filled; see {}",
+            humansize(bad_bytes),
+            bad_regions.len(),
+            bad_region_log_path(image_path)
+        );
     }
 
     image.sync_all()?;
@@ -284,6 +328,27 @@ fn partial_image_path(image_path: &str) -> String {
 /// Sentinel file the GUI drops to ask this (possibly elevated) process to abort.
 fn cancel_sentinel_path(image_path: &str) -> String {
     format!("{image_path}.cancel")
+}
+
+/// Whether the accumulated unreadable regions mean the drive is too damaged to
+/// produce a meaningful image and we should stop.
+fn too_damaged(bad_bytes: u64, bad_regions: usize) -> bool {
+    bad_bytes > MAX_BAD_REGION_BYTES || bad_regions > MAX_BAD_REGIONS
+}
+
+/// Sidecar log listing the regions that were zero-filled in the image.
+fn bad_region_log_path(image_path: &str) -> String {
+    format!("{image_path}.badblocks.txt")
+}
+
+fn write_bad_region_log(image_path: &str, regions: &[(u64, u64)]) {
+    let mut text = String::from(
+        "# FlowClone unreadable regions (zero-filled)\n# offset_bytes\tlength_bytes\n",
+    );
+    for (offset, len) in regions {
+        text.push_str(&format!("{offset}\t{len}\n"));
+    }
+    let _ = std::fs::write(bad_region_log_path(image_path), text);
 }
 
 fn write_flow_image_header(writer: &mut impl Write, source: &DiskInfo) -> Result<()> {
@@ -504,6 +569,14 @@ mod tests {
         assert!(!std::path::Path::new(&cancel_path).exists());
 
         std::fs::remove_file(source_path).expect("remove source file");
+    }
+
+    #[test]
+    fn too_damaged_trips_on_byte_or_region_caps() {
+        assert!(!too_damaged(0, 0));
+        assert!(!too_damaged(MAX_BAD_REGION_BYTES, MAX_BAD_REGIONS));
+        assert!(too_damaged(MAX_BAD_REGION_BYTES + 1, 1));
+        assert!(too_damaged(0, MAX_BAD_REGIONS + 1));
     }
 
     #[test]
