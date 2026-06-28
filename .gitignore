@@ -52,5 +52,13 @@ apps/desktop/src-tauri/icons/ios/
 .env.*
 !.env.example
 
+# AI agent docs (kept local, not committed)
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.cursor/
+.github/copilot-instructions.md
+
 # OS / misc
 Thumbs.db

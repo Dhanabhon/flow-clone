@@ -8,6 +8,8 @@ use flowclone_disk::{DiskCatalogApi, DiskInfo};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -23,6 +25,9 @@ const IMAGE_BLOCK_SIZE: usize = 4 * 1024 * 1024;
 const MAX_IMAGE_HEADER_BYTES: u64 = 1024 * 1024;
 const STUB_IMAGE_FORMAT: &str = "flowclone-stub-image";
 const STUB_IMAGE_VERSION: u64 = 1;
+/// Seconds the partial image can stop growing before we treat it as an
+/// interruption (disconnect / power loss) in the UI.
+const ELEVATED_STALL_SECS: f64 = 5.0;
 
 /// Shared engine state, injected via `app.manage`.
 pub type FlowCloneState = Arc<CloneEngine>;
@@ -32,6 +37,9 @@ pub type ImageCancelState = Arc<Mutex<Option<ImageCancelJob>>>;
 pub struct ImageCancelJob {
     job_id: String,
     cancel: Arc<AtomicBool>,
+    // Set for elevated jobs. The root CLI copy can't be stopped via the
+    // in-process flag, so cancellation drops a sentinel file it polls instead.
+    image_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +152,12 @@ pub async fn start_clone_stub(
 }
 
 /// Create a migration image file by copying raw source bytes into `.flowimg`.
+///
+/// Reading a whole disk means opening `/dev/rdiskN`, which only root/operator
+/// can do. When the GUI can open it directly (running elevated) the copy runs
+/// in-process with live progress and cancellation. Otherwise it falls back to
+/// the trusted `flowclone` CLI behind a native macOS admin prompt, polling the
+/// growing `.part` file for progress.
 #[tauri::command]
 pub async fn create_image_stub(
     app: AppHandle,
@@ -160,12 +174,34 @@ pub async fn create_image_stub(
     let required_image_bytes = flow_image_file_len(&source)?;
     flowclone_raw::ensure_free_space_for_output(&image_path, required_image_bytes)
         .map_err(|error| error.to_string())?;
-    ensure_source_readable(&raw_source_path)?;
 
+    // Record the in-flight job so an unexpected exit (power loss, crash) can be
+    // detected and surfaced on the next launch. Terminal events clear it.
+    write_pending_marker(&image_path, &source);
+
+    let image_cancel = image_cancel.inner().clone();
+    match File::open(&raw_source_path) {
+        Ok(_) => spawn_inprocess_image_copy(app, image_cancel, source, raw_source_path, image_path),
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+            spawn_elevated_image_copy(app, image_cancel, source, image_path)
+        }
+        Err(error) => Err(format!(
+            "failed to open source disk {raw_source_path}: {error}"
+        )),
+    }
+}
+
+/// In-process raw copy. Used when the process can already read the raw device.
+fn spawn_inprocess_image_copy(
+    app: AppHandle,
+    image_cancel: ImageCancelState,
+    source: DiskInfo,
+    raw_source_path: String,
+    image_path: String,
+) -> Result<String, String> {
     let job_id = stub_id("image");
     let cancel = Arc::new(AtomicBool::new(false));
-    let image_cancel = image_cancel.inner().clone();
-    set_image_cancel(&image_cancel, job_id.clone(), cancel.clone())?;
+    set_image_cancel(&image_cancel, job_id.clone(), cancel.clone(), None)?;
     let total = source.total_bytes;
     let progress_app = app.clone();
     let progress_job_id = job_id.clone();
@@ -240,19 +276,267 @@ pub async fn create_image_stub(
             }
         }
         clear_image_cancel(&cleanup_cancel, &cleanup_job_id);
+        clear_pending_marker();
     });
     Ok(job_id)
+}
+
+/// Elevated raw copy via the `flowclone` CLI behind a macOS admin prompt.
+///
+/// The privileged copy runs as a separate root process, so progress is observed
+/// by polling the CLI's `.part` file rather than via in-process callbacks. The
+/// background root copy cannot be interrupted mid-write in Phase 1; cancellation
+/// only detaches the UI poller (the privileged helper will own real cancellation
+/// later).
+fn spawn_elevated_image_copy(
+    app: AppHandle,
+    image_cancel: ImageCancelState,
+    source: DiskInfo,
+    image_path: String,
+) -> Result<String, String> {
+    let cli = resolve_cli_binary()?;
+    let job_id = stub_id("image");
+    let cancel = Arc::new(AtomicBool::new(false));
+    set_image_cancel(
+        &image_cancel,
+        job_id.clone(),
+        cancel.clone(),
+        Some(image_path.clone()),
+    )?;
+
+    let total = source.total_bytes;
+    let header_bytes = image_header_overhead(&source)?;
+    let partial_path = partial_image_path(&image_path);
+    let device_path = source.device_path.clone();
+    let cleanup_job_id = job_id.clone();
+    let cleanup_cancel = image_cancel.clone();
+
+    // Progress poller: watch the partial file grow while the root copy runs.
+    let poll_app = app.clone();
+    let poll_job_id = job_id.clone();
+    let poll_cancel = cancel.clone();
+    let poll_partial = partial_path.clone();
+    let poll_image_path = image_path.clone();
+    tauri::async_runtime::spawn(async move {
+        let start = Instant::now();
+        let mut last_bytes = 0u64;
+        let mut last_tick = Instant::now();
+        let mut speed = 0u64;
+        let mut last_growth_bytes = 0u64;
+        let mut last_growth_at = Instant::now();
+        loop {
+            if poll_cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            let elapsed = start.elapsed().as_secs_f64();
+            let progress = match std::fs::metadata(&poll_partial) {
+                Ok(metadata) => {
+                    let bytes_done = metadata.len().saturating_sub(header_bytes).min(total);
+                    if bytes_done > last_growth_bytes {
+                        last_growth_bytes = bytes_done;
+                        last_growth_at = Instant::now();
+                    }
+                    // Speed/ETA from how fast the partial file grows between ticks.
+                    let interval = last_tick.elapsed().as_secs_f64();
+                    if interval >= 0.8 {
+                        speed = (bytes_done.saturating_sub(last_bytes) as f64 / interval) as u64;
+                        last_bytes = bytes_done;
+                        last_tick = Instant::now();
+                    }
+                    let fraction = if total == 0 {
+                        0.0
+                    } else {
+                        (bytes_done as f64 / total as f64).clamp(0.0, 1.0)
+                    };
+                    // The file stopped growing: the CLI is recovering from a
+                    // disconnect (cable/power). Surface that instead of a frozen bar.
+                    let stalled = bytes_done > 0
+                        && bytes_done < total
+                        && last_growth_at.elapsed().as_secs_f64() >= ELEVATED_STALL_SECS;
+                    let eta_secs = if !stalled && speed > 0 && bytes_done < total {
+                        Some(((total - bytes_done) as f64 / speed as f64).max(0.0))
+                    } else {
+                        None
+                    };
+                    Progress {
+                        job_id: poll_job_id.clone(),
+                        phase: Phase::Cloning,
+                        fraction,
+                        bytes_done,
+                        bytes_total: total,
+                        read_speed: if stalled { 0 } else { speed },
+                        write_speed: if stalled { 0 } else { speed },
+                        elapsed_secs: elapsed,
+                        eta_secs,
+                        current_operation: if stalled {
+                            "Interrupted; reconnecting to disk".to_string()
+                        } else {
+                            format!(
+                                "Creating image block {} to {}",
+                                bytes_done / IMAGE_BLOCK_SIZE as u64,
+                                poll_image_path
+                            )
+                        },
+                    }
+                }
+                // No partial file yet: the CLI is still waiting for the admin
+                // password prompt (or unmounting). Emit a heartbeat so the screen
+                // shows elapsed time and tells the user to approve the prompt,
+                // rather than appearing frozen at "Preparing image".
+                Err(_) => Progress {
+                    job_id: poll_job_id.clone(),
+                    phase: Phase::Cloning,
+                    fraction: 0.0,
+                    bytes_done: 0,
+                    bytes_total: total,
+                    read_speed: 0,
+                    write_speed: 0,
+                    elapsed_secs: elapsed,
+                    eta_secs: None,
+                    current_operation: "Waiting for administrator authorization".to_string(),
+                },
+            };
+            let _ = poll_app.emit("clone://progress", progress);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
+
+    // Runner: launch the elevated CLI and report the terminal state.
+    let run_app = app.clone();
+    let run_job_id = job_id.clone();
+    let run_cancel = cancel.clone();
+    let run_image_path = image_path.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            run_elevated_create_image(&cli, &device_path, &run_image_path)
+        })
+        .await;
+        run_cancel.store(true, Ordering::SeqCst);
+
+        match result {
+            Ok(Ok(())) => {
+                let _ = run_app.emit(
+                    "clone://progress",
+                    Progress {
+                        job_id: run_job_id,
+                        phase: Phase::Completed,
+                        fraction: 1.0,
+                        bytes_done: total,
+                        bytes_total: total,
+                        read_speed: 0,
+                        write_speed: 0,
+                        elapsed_secs: 0.0,
+                        eta_secs: Some(0.0),
+                        current_operation: format!("Image workflow ready at {image_path}"),
+                    },
+                );
+            }
+            Ok(Err(error)) => {
+                let _ = run_app.emit(
+                    "clone://progress",
+                    failed_progress(run_job_id, total, error),
+                );
+            }
+            Err(error) => {
+                let _ = run_app.emit(
+                    "clone://progress",
+                    failed_progress(run_job_id, total, error.to_string()),
+                );
+            }
+        }
+        clear_image_cancel(&cleanup_cancel, &cleanup_job_id);
+        clear_pending_marker();
+    });
+
+    Ok(job_id)
+}
+
+/// Bytes the `.flowimg` header occupies before the raw payload begins.
+fn image_header_overhead(source: &DiskInfo) -> Result<u64, String> {
+    let header_len = flow_image_header(source)?.len() as u64;
+    Ok(FLOW_IMAGE_MAGIC.len() as u64 + IMAGE_HEADER_LEN_BYTES as u64 + header_len)
+}
+
+/// Locate the `flowclone` CLI binary that performs the privileged raw read.
+fn resolve_cli_binary() -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("FLOWCLONE_CLI") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    // Production: bundled alongside the app executable (Tauri sidecar). Dev:
+    // `target/<profile>/flowclone` sits next to the app binary too.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        let candidate = dir.join("flowclone");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("FlowClone CLI binary not found. Build it with `cargo build -p flowclone-cli`, or set FLOWCLONE_CLI to its path.".into())
+}
+
+/// Run `flowclone create-image` as root via a native macOS admin prompt.
+fn run_elevated_create_image(
+    cli: &Path,
+    device_path: &str,
+    image_path: &str,
+) -> Result<(), String> {
+    let shell_command = format!(
+        "{} create-image --source {} --output {}",
+        posix_quote(&cli.to_string_lossy()),
+        posix_quote(device_path),
+        posix_quote(image_path),
+    );
+    let apple_script = format!(
+        "do shell script {} with administrator privileges",
+        applescript_quote(&shell_command)
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&apple_script)
+        .output()
+        .map_err(|error| format!("failed to launch admin prompt: {error}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("-128") || stderr.contains("User canceled") {
+        return Err("Admin authorization was cancelled.".into());
+    }
+    Err(format!("elevated image creation failed: {}", stderr.trim()))
+}
+
+/// Single-quote a value for safe use as one `/bin/sh` argument.
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Escape a string for use as an AppleScript double-quoted string literal.
+fn applescript_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn set_image_cancel(
     state: &ImageCancelState,
     job_id: String,
     cancel: Arc<AtomicBool>,
+    image_path: Option<String>,
 ) -> Result<(), String> {
     let mut active = state
         .lock()
         .map_err(|_| "image cancel state is unavailable".to_string())?;
-    *active = Some(ImageCancelJob { job_id, cancel });
+    *active = Some(ImageCancelJob {
+        job_id,
+        cancel,
+        image_path,
+    });
     Ok(())
 }
 
@@ -320,9 +604,10 @@ fn create_flow_image_file(
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(ImageCopyProgress),
 ) -> Result<ImageCopyStats, String> {
+    let partial_path = partial_image_path(image_path);
     let mut reader = File::open(source_path)
         .map_err(|error| format!("failed to open source disk {source_path}: {error}"))?;
-    let mut image = File::create(image_path)
+    let mut image = File::create(&partial_path)
         .map_err(|error| format!("failed to create image file: {error}"))?;
     write_flow_image_header(&mut image, source)?;
 
@@ -335,13 +620,13 @@ fn create_flow_image_file(
 
     while bytes_done < source.total_bytes {
         if cancel.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(image_path);
+            let _ = std::fs::remove_file(&partial_path);
             return Err("cancelled".into());
         }
         let remaining = (source.total_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
-        let read = reader
-            .read(&mut buf[..remaining])
-            .map_err(|error| format!("failed to read source disk: {error}"))?;
+        let read = reader.read(&mut buf[..remaining]).map_err(|error| {
+            format!("failed to read source disk at offset {bytes_done} bytes: {error}")
+        })?;
         if read == 0 {
             return Err(format!(
                 "source disk ended early: copied {bytes_done} of {} bytes",
@@ -349,9 +634,9 @@ fn create_flow_image_file(
             ));
         }
 
-        image
-            .write_all(&buf[..read])
-            .map_err(|error| format!("failed to write image file: {error}"))?;
+        image.write_all(&buf[..read]).map_err(|error| {
+            format!("failed to write image file at source offset {bytes_done} bytes: {error}")
+        })?;
         bytes_done += read as u64;
         block_index += 1;
 
@@ -378,6 +663,9 @@ fn create_flow_image_file(
     image
         .sync_all()
         .map_err(|error| format!("failed to flush image file: {error}"))?;
+    drop(image);
+    std::fs::rename(&partial_path, image_path)
+        .map_err(|error| format!("failed to finalize image file: {error}"))?;
     let elapsed_secs = start.elapsed().as_secs_f64();
     let average_speed = if elapsed_secs > 0.0 {
         (bytes_done as f64 / elapsed_secs) as u64
@@ -425,23 +713,135 @@ fn flow_image_file_len(source: &DiskInfo) -> Result<u64, String> {
         + source.total_bytes)
 }
 
+fn partial_image_path(image_path: &str) -> String {
+    format!("{image_path}.part")
+}
+
+/// Sentinel file the elevated CLI polls to know it should abort.
+fn cancel_sentinel_path(image_path: &str) -> String {
+    format!("{image_path}.cancel")
+}
+
+/// Marker recording an in-flight image job, kept in the user's home so it
+/// survives a crash or power loss (unlike the temp dir, which can be cleared).
+fn pending_marker_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join(".flowclone")
+            .join("pending-image.json"),
+    )
+}
+
+fn write_pending_marker(image_path: &str, source: &DiskInfo) {
+    let Some(path) = pending_marker_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let marker = serde_json::json!({
+        "image_path": image_path,
+        "source_model": source.model,
+        "total_bytes": source.total_bytes,
+    });
+    let _ = std::fs::write(&path, marker.to_string());
+}
+
+fn clear_pending_marker() {
+    if let Some(path) = pending_marker_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// An image job that was running when the app last exited unexpectedly.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingImage {
+    pub image_path: String,
+    pub source_model: String,
+    pub bytes_done: u64,
+    pub total_bytes: u64,
+}
+
+/// Report an interrupted image job (power loss / crash), if one is left behind.
+#[tauri::command]
+pub async fn pending_image_job() -> Result<Option<PendingImage>, String> {
+    let Some(path) = pending_marker_path() else {
+        return Ok(None);
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        clear_pending_marker();
+        return Ok(None);
+    };
+    let image_path = value
+        .get("image_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if image_path.is_empty() {
+        clear_pending_marker();
+        return Ok(None);
+    }
+
+    // If the final image exists, the job actually completed — nothing pending.
+    if std::path::Path::new(&image_path).exists() {
+        clear_pending_marker();
+        return Ok(None);
+    }
+    // Without a partial file there is nothing to recover or clean up.
+    let Ok(partial) = std::fs::metadata(partial_image_path(&image_path)) else {
+        clear_pending_marker();
+        return Ok(None);
+    };
+
+    Ok(Some(PendingImage {
+        image_path,
+        source_model: value
+            .get("source_model")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        bytes_done: partial.len(),
+        total_bytes: value
+            .get("total_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    }))
+}
+
+/// Delete the partial file from an interrupted job and clear the marker.
+#[tauri::command]
+pub async fn discard_pending_image() -> Result<(), String> {
+    if let Some(path) = pending_marker_path() {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(image_path) = value.get("image_path").and_then(|v| v.as_str()) {
+                    let _ = std::fs::remove_file(partial_image_path(image_path));
+                    let _ = std::fs::remove_file(cancel_sentinel_path(image_path));
+                }
+            }
+        }
+    }
+    clear_pending_marker();
+    Ok(())
+}
+
+/// Keep the partial file but stop reminding the user about the interrupted job.
+#[tauri::command]
+pub async fn dismiss_pending_image() -> Result<(), String> {
+    clear_pending_marker();
+    Ok(())
+}
+
 fn raw_device_path(path: &str) -> String {
     if let Some(suffix) = path.strip_prefix("/dev/disk") {
         format!("/dev/rdisk{suffix}")
     } else {
         path.to_string()
     }
-}
-
-fn ensure_source_readable(path: &str) -> Result<(), String> {
-    File::open(path)
-        .map(|_| ())
-        .map_err(|error| match error.kind() {
-            ErrorKind::PermissionDenied => {
-                format!("macOS denied access to {path}. Raw disk reads need elevated disk access.")
-            }
-            _ => format!("failed to open source disk {path}: {error}"),
-        })
 }
 
 /// Validate a FlowClone migration image workflow file.
@@ -488,7 +888,13 @@ pub async fn cancel_clone(
         .map_err(|_| "image cancel state is unavailable".to_string())?
         .as_ref()
     {
+        // Stops the in-process copy and the progress poller.
         job.cancel.store(true, Ordering::SeqCst);
+        // The elevated copy runs as a separate root process that ignores the
+        // flag above, so drop a sentinel file it polls and aborts on.
+        if let Some(image_path) = &job.image_path {
+            let _ = std::fs::write(cancel_sentinel_path(image_path), b"cancel");
+        }
     }
     // The current MVP runs one job at a time; cancellation is handled via the
     // job's cancel token which will be looked up by id in a follow-up.
@@ -773,9 +1179,54 @@ mod tests {
     }
 
     #[test]
+    fn create_flow_image_file_only_finalizes_complete_images() {
+        let payload = b"short source";
+        let mut source_path = std::env::temp_dir();
+        source_path.push(format!("{}.source", stub_id("flowclone-test-short")));
+        let mut image_path = std::env::temp_dir();
+        image_path.push(format!("{}.flowimg", stub_id("flowclone-test-short")));
+        std::fs::write(&source_path, payload).expect("write source file");
+
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.total_bytes = payload.len() as u64 + 1;
+        let source_path = source_path.to_string_lossy().to_string();
+        let image_path = image_path.to_string_lossy().to_string();
+        let partial_path = partial_image_path(&image_path);
+        let cancel = AtomicBool::new(false);
+
+        let error = create_flow_image_file(&source_path, &image_path, &source, &cancel, |_| {})
+            .expect_err("incomplete source should fail");
+
+        assert!(error.contains("source disk ended early"));
+        assert!(!std::path::Path::new(&image_path).exists());
+        assert!(std::path::Path::new(&partial_path).exists());
+
+        std::fs::remove_file(source_path).expect("remove source file");
+        std::fs::remove_file(partial_path).expect("remove partial image file");
+    }
+
+    #[test]
     fn raw_device_path_prefers_rdisk_on_macos_device_names() {
         assert_eq!(raw_device_path("/dev/disk6"), "/dev/rdisk6");
         assert_eq!(raw_device_path("/tmp/source.img"), "/tmp/source.img");
+    }
+
+    #[test]
+    fn posix_quote_neutralizes_single_quotes_and_spaces() {
+        assert_eq!(posix_quote("/dev/disk6"), "'/dev/disk6'");
+        assert_eq!(
+            posix_quote("/Volumes/My Disk/img.flowimg"),
+            "'/Volumes/My Disk/img.flowimg'"
+        );
+        // A path that tries to break out of the quotes is neutralized.
+        assert_eq!(posix_quote("a'; rm -rf /; '"), "'a'\\''; rm -rf /; '\\'''");
+    }
+
+    #[test]
+    fn applescript_quote_escapes_backslash_then_quotes() {
+        assert_eq!(applescript_quote("plain"), "\"plain\"");
+        // Backslashes are doubled and double-quotes escaped, in that order.
+        assert_eq!(applescript_quote("a\\b\"c"), "\"a\\\\b\\\"c\"");
     }
 
     #[test]

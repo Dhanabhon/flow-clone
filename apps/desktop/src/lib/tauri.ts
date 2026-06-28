@@ -119,7 +119,7 @@ export const restoreImageStub = (
         imagePath,
         targetPath,
       })
-    : Promise.resolve(`restore-${Date.now()}`);
+    : Promise.resolve(restoreBrowserImageStub(imagePath, targetPath));
 
 export const validateImageStub = (
   imagePath: string
@@ -183,6 +183,25 @@ export function openFullDiskAccessSettings(): Promise<void> {
   return Promise.resolve();
 }
 
+/** An image job that was interrupted by a crash or power loss. */
+export interface PendingImage {
+  image_path: string;
+  source_model: string;
+  bytes_done: number;
+  total_bytes: number;
+}
+
+export const pendingImageJob = (): Promise<PendingImage | null> =>
+  isTauriRuntime()
+    ? invoke<PendingImage | null>("pending_image_job")
+    : Promise.resolve(null);
+
+export const discardPendingImage = (): Promise<void> =>
+  isTauriRuntime() ? invoke("discard_pending_image") : Promise.resolve();
+
+export const dismissPendingImage = (): Promise<void> =>
+  isTauriRuntime() ? invoke("dismiss_pending_image") : Promise.resolve();
+
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -207,6 +226,15 @@ export function onProgress(cb: (p: Progress) => void): Promise<UnlistenFn> {
     return Promise.resolve(() => browserProgress.delete(cb));
   }
   return listen<Progress>("clone://progress", (e) => cb(e.payload));
+}
+
+/**
+ * Subscribe to disk attach/detach events from the native watcher. Lets the UI
+ * refresh the disk list on change instead of polling. No-op in the browser.
+ */
+export function onDisksChanged(cb: () => void): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) return Promise.resolve(() => {});
+  return listen("disks://changed", () => cb());
 }
 
 function validateBrowserPlan(sourcePath: string, targetPath: string) {
@@ -312,4 +340,11 @@ function validateBrowserImageStub(imagePath: string): ImageValidation {
     payload_bytes: 0,
     note: "Preview file only. No disk data has been copied.",
   };
+}
+
+function restoreBrowserImageStub(imagePath: string, targetPath: string): string {
+  validateBrowserImageStub(imagePath);
+  const target = browserDisks().find((disk) => disk.device_path === targetPath);
+  if (!target) throw new Error(`target not found: ${targetPath}`);
+  return `restore-${Date.now()}`;
 }

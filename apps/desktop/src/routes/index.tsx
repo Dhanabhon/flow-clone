@@ -8,6 +8,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -15,8 +16,10 @@ import {
   copyText,
   createImageStub,
   generateReportStub,
+  isTauriRuntime,
   onProgress,
   openFullDiskAccessSettings,
+  restoreImageStub,
   saveReportFile,
   startCloneStub,
   validateImageStub,
@@ -24,7 +27,7 @@ import {
 import type { ImageValidation, Progress } from "@/lib/types";
 import { fileNameFromPath, formatBytes, formatDuration, formatSpeed } from "@/lib/utils";
 import { HomeScreen } from "@/features/disk-selection/HomeScreen";
-import { useFlowStore } from "@/stores/flow-store";
+import { useFlowStore, type WorkflowMode } from "@/stores/flow-store";
 
 export function Routes() {
   const phase = useFlowStore((s) => s.phase);
@@ -43,15 +46,37 @@ export function Routes() {
 
 function ConfirmationScreen() {
   const { t } = useI18n();
-  const { source, target, verify, setVerify, beginClone, goTo } = useFlowStore();
+  const {
+    mode,
+    source,
+    target,
+    imagePath,
+    verify,
+    setVerify,
+    beginClone,
+    setProgress,
+    goTo,
+  } = useFlowStore();
   const [typed, setTyped] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const ready = typed === "ERASE" && source && target;
+  const isRestoreMode = mode === "restore";
+  const ready =
+    typed === "ERASE" && target && (isRestoreMode ? imagePath : source);
 
   async function start() {
-    if (!source || !target) return;
+    if (!target) return;
     setError(null);
     try {
+      if (isRestoreMode) {
+        if (!imagePath) return;
+        const jobId = await restoreImageStub(imagePath, target.device_path);
+        beginClone(jobId, "restore");
+        setProgress(completedRestoreProgress(jobId, target.total_bytes));
+        goTo("completed");
+        return;
+      }
+
+      if (!source) return;
       const jobId = await startCloneStub(source.device_path, target.device_path, verify);
       beginClone(jobId, "clone");
     } catch (err) {
@@ -59,7 +84,7 @@ function ConfirmationScreen() {
     }
   }
 
-  if (!source || !target) {
+  if (!target || (isRestoreMode ? !imagePath : !source)) {
     return <MissingSelection />;
   }
 
@@ -70,10 +95,18 @@ function ConfirmationScreen() {
           <ShieldCheck className="h-8 w-8" />
         </div>
         <h1 className="text-center text-3xl font-semibold">
-          {t("readyToClone")}
+          {isRestoreMode ? t("readyToRestore") : t("readyToClone")}
         </h1>
         <div className="mt-8 grid grid-cols-[1fr_auto_1fr] items-center gap-4 rounded-input border border-border bg-background p-4">
-          <DiskSummary label={t("source")} name={source.model} size={source.total_bytes} />
+          <DiskSummary
+            label={isRestoreMode ? t("image") : t("source")}
+            name={
+              isRestoreMode
+                ? fileNameFromPath(imagePath ?? "", "migration.flowimg")
+                : source?.model ?? t("source")
+            }
+            size={isRestoreMode ? undefined : source?.total_bytes}
+          />
           <ArrowRight className="h-5 w-5 text-primary" />
           <DiskSummary label={t("target")} name={target.model} size={target.total_bytes} />
         </div>
@@ -81,7 +114,7 @@ function ConfirmationScreen() {
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
             <p className="text-sm">
-              {t("eraseWarning")}
+              {isRestoreMode ? t("restoreEraseWarning") : t("eraseWarning")}
             </p>
           </div>
         </div>
@@ -94,21 +127,23 @@ function ConfirmationScreen() {
             placeholder="ERASE"
           />
         </label>
-        <label className="mt-4 flex items-center gap-3 text-sm text-muted">
-          <input
-            type="checkbox"
-            checked={verify}
-            onChange={(event) => setVerify(event.target.checked)}
-          />
-          {t("verifyAfterCloning")}
-        </label>
+        {!isRestoreMode && (
+          <label className="mt-4 flex items-center gap-3 text-sm text-muted">
+            <input
+              type="checkbox"
+              checked={verify}
+              onChange={(event) => setVerify(event.target.checked)}
+            />
+            {t("verifyAfterCloning")}
+          </label>
+        )}
         {error && <p className="mt-4 text-sm text-danger">{error}</p>}
         <div className="mt-7 grid grid-cols-2 gap-3">
           <Button variant="secondary" onClick={() => goTo("home")}>
             {t("cancel")}
           </Button>
           <Button disabled={!ready} onClick={start}>
-            {t("clone")}
+            {isRestoreMode ? t("restoreImageAction") : t("clone")}
           </Button>
         </div>
       </section>
@@ -125,6 +160,7 @@ function CloningScreen() {
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const isImageMode = mode === "image";
+  const isRestoreMode = mode === "restore";
 
   useEffect(() => {
     let active = true;
@@ -146,7 +182,12 @@ function CloningScreen() {
     };
   }, [goTo, setProgress]);
 
-  const shown = progress ?? emptyProgress(source?.total_bytes ?? 0, mode);
+  const shown =
+    progress ??
+    emptyProgress(
+      (isRestoreMode ? target?.total_bytes : source?.total_bytes) ?? 0,
+      mode
+    );
   const pct = Math.round(shown.fraction * 100);
   const imageName = fileNameFromPath(imagePath, "migration.flowimg");
   const canCancel = isImageMode && shown.phase !== "completed" && shown.phase !== "failed";
@@ -155,7 +196,23 @@ function CloningScreen() {
     ? parseInsufficientSpace(shown.current_operation)
     : null;
   const permissionDenied =
-    isImageMode && failed && /denied access|permission denied/i.test(shown.current_operation);
+    isImageMode &&
+    failed &&
+    // EACCES ("permission denied") is the raw 640 device-mode gate; EPERM
+    // ("operation not permitted" / os error 1) is the macOS Full Disk Access
+    // gate that applies even to root. Both route to the same recovery card.
+    /denied access|permission denied|not permitted|os error 1/i.test(
+      shown.current_operation
+    );
+  // The source dropped off the bus and didn't recover (disconnect / power loss).
+  const interrupted =
+    isImageMode &&
+    failed &&
+    !insufficientSpace &&
+    !permissionDenied &&
+    /dropping off the bus|did not come back|Device not configured|ended early|os error 6|os error 5/i.test(
+      shown.current_operation
+    );
   const cliCommand = useMemo(
     () =>
       source && imagePath
@@ -168,23 +225,42 @@ function CloningScreen() {
       ? t("notEnoughSpaceTitle")
       : permissionDenied
       ? t("diskAccessRequiredTitle")
+      : interrupted
+      ? t("migrationInterruptedTitle")
       : isImageMode
         ? t("imageFailedTitle")
+        : isRestoreMode
+          ? t("restoreFailedTitle")
         : t("cloneFailedTitle")
     : isImageMode
       ? t("creatingImageTitle")
+      : isRestoreMode
+        ? t("restoringImageTitle")
       : t("cloningTitle");
   const help = failed
     ? insufficientSpace
       ? t("notEnoughSpaceBody")
       : permissionDenied
       ? t("diskAccessRequiredBody")
+      : interrupted
+      ? t("migrationInterruptedBody")
       : t("workflowFailedHelp")
     : isImageMode
       ? t("creatingImageHelp")
+      : isRestoreMode
+        ? t("restoringImageHelp")
       : t("cloningHelp");
 
   async function cancelImage() {
+    const confirmed = isTauriRuntime()
+      ? await ask(t("cancelImageConfirmBody"), {
+          title: t("cancelImageConfirmTitle"),
+          kind: "warning",
+          okLabel: t("cancelImageConfirmOk"),
+          cancelLabel: t("cancelImageConfirmKeep"),
+        })
+      : window.confirm(t("cancelImageConfirmBody"));
+    if (!confirmed) return;
     setIsCancelling(true);
     await cancelClone();
     reset();
@@ -247,7 +323,11 @@ function CloningScreen() {
           </div>
         )}
         <div className="mt-8 grid grid-cols-[1fr_auto_1fr] items-center gap-4 rounded-input border border-border bg-background p-4">
-          <DiskSummary label={t("source")} name={source?.model ?? t("source")} size={source?.total_bytes ?? 0} />
+          <DiskSummary
+            label={isRestoreMode ? t("image") : t("source")}
+            name={isRestoreMode ? imageName : source?.model ?? t("source")}
+            size={isRestoreMode ? undefined : source?.total_bytes ?? 0}
+          />
           <ArrowRight className="h-5 w-5 text-primary" />
           {isImageMode ? (
             <DiskSummary label={t("image")} name={imageName} size={source?.total_bytes ?? 0} />
@@ -299,6 +379,25 @@ function CloningScreen() {
           </div>
         )}
 
+        {interrupted && (
+          <div className="mx-auto mt-6 max-w-xl rounded-input border border-warning/30 bg-warning/10 p-4 text-left">
+            <p className="text-sm text-warning">{t("migrationInterruptedHelp")}</p>
+            <Button
+              className="mt-4 w-full gap-2"
+              size="sm"
+              variant="secondary"
+              disabled={isRetrying}
+              onClick={retryImage}
+            >
+              <RefreshCw className={isRetrying ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              {t("tryAgain")}
+            </Button>
+            {recoveryError && (
+              <p className="mt-3 text-sm text-danger">{recoveryError}</p>
+            )}
+          </div>
+        )}
+
         {failed && (
           <Button className="mt-6 w-full max-w-xs" variant="secondary" onClick={reset}>
             {t("back")}
@@ -331,6 +430,8 @@ function CompletedScreen() {
     string | null
   >(null);
   const imageName = fileNameFromPath(imagePath, "migration.flowimg");
+  const isImageMode = mode === "image";
+  const isRestoreMode = mode === "restore";
 
   useEffect(() => {
     if (mode !== "image" || !imagePath) return;
@@ -352,15 +453,21 @@ function CompletedScreen() {
   }, [imagePath, mode]);
 
   async function exportReport() {
-    if (!source) return;
     setExportMessage(null);
     setExportError(null);
     try {
-      const text = await generateReportStub(
-        source.device_path,
-        target?.device_path,
-        imagePath ?? undefined
-      );
+      let text: string;
+      if (isRestoreMode) {
+        if (!imagePath || !target) return;
+        text = restoreReportText(imagePath, target.device_path);
+      } else {
+        if (!source) return;
+        text = await generateReportStub(
+          source.device_path,
+          target?.device_path,
+          imagePath ?? undefined
+        );
+      }
       const path = await saveReportFile(text);
       if (!path) return;
       setReport(text);
@@ -378,18 +485,28 @@ function CompletedScreen() {
           <CheckCircle2 className="h-12 w-12" />
         </div>
         <h1 className="mt-5 text-3xl font-semibold">
-          {mode === "image" ? t("imageMigrationReady") : t("cloneCompleted")}
+          {isImageMode
+            ? t("imageMigrationReady")
+            : isRestoreMode
+              ? t("restoreCompleted")
+              : t("cloneCompleted")}
         </h1>
         <p className="mt-2 text-sm text-muted">
-          {mode === "image"
+          {isImageMode
             ? t("imageCompletedBody")
-            : t("cloneCompletedBody")}
+            : isRestoreMode
+              ? t("restoreCompletedBody")
+              : t("cloneCompletedBody")}
         </p>
 
         <div className="mt-8 rounded-input border border-border bg-background p-4 text-left">
           <div className="grid gap-4 md:grid-cols-2">
-            <DiskSummary label={t("source")} name={source?.model ?? t("source")} size={source?.total_bytes ?? 0} />
-            {mode === "clone" ? (
+            <DiskSummary
+              label={isRestoreMode ? t("image") : t("source")}
+              name={isRestoreMode ? imageName : source?.model ?? t("source")}
+              size={isRestoreMode ? undefined : source?.total_bytes ?? 0}
+            />
+            {!isImageMode ? (
               <DiskSummary label={t("target")} name={target?.model ?? t("target")} size={target?.total_bytes ?? 0} />
             ) : (
               <DiskSummary label={t("image")} name={imageName} size={source?.total_bytes ?? 0} />
@@ -398,11 +515,14 @@ function CompletedScreen() {
           <dl className="mt-5 grid grid-cols-3 gap-3 border-t border-border pt-5 text-sm">
             <Metric label={t("averageSpeed")} value={formatSpeed(progress?.write_speed ?? 0)} />
             <Metric label={t("totalTime")} value={formatDuration(progress?.elapsed_secs ?? 0)} />
-            <Metric label={mode === "clone" ? t("verification") : t("restore")} value={mode === "clone" ? t("passed") : t("ready")} />
+            <Metric
+              label={mode === "clone" ? t("verification") : t("restore")}
+              value={mode === "clone" ? t("passed") : t("ready")}
+            />
           </dl>
         </div>
 
-        {mode === "image" && (
+        {isImageMode && (
           <p
             className={
               imageValidationError
@@ -454,13 +574,13 @@ function DiskSummary({
 }: {
   label: string;
   name: string;
-  size: number;
+  size?: number;
 }) {
   return (
     <div className="min-w-0">
       <p className="text-xs uppercase tracking-wide text-muted">{label}</p>
       <p className="mt-1 truncate font-semibold" title={name}>{name}</p>
-      <p className="text-sm text-muted">{formatBytes(size)}</p>
+      {size != null && <p className="text-sm text-muted">{formatBytes(size)}</p>}
     </div>
   );
 }
@@ -536,7 +656,13 @@ function progressOperationText(
 ): string {
   if (text === "Preparing clone") return t("preparingClone");
   if (text === "Preparing image") return t("preparingImage");
+  if (text === "Preparing restore") return t("preparingRestore");
+  if (text === "Waiting for administrator authorization")
+    return t("waitingForAuthorization");
+  if (text === "Interrupted; reconnecting to disk")
+    return t("reconnectingToDisk");
   if (text === "Completed") return t("cloneCompleted");
+  if (text === "Restore workflow ready") return t("restoreWorkflowReady");
   if (text === "Mock migration image created") return t("mockImageCreated");
   const imageReady = text.match(/^Image workflow ready at (.+)$/);
   if (imageReady) {
@@ -560,7 +686,7 @@ function progressOperationText(
   return text;
 }
 
-function emptyProgress(bytesTotal: number, mode: "clone" | "image"): Progress {
+function emptyProgress(bytesTotal: number, mode: WorkflowMode): Progress {
   return {
     job_id: "",
     phase: "preparing",
@@ -571,7 +697,27 @@ function emptyProgress(bytesTotal: number, mode: "clone" | "image"): Progress {
     write_speed: 0,
     elapsed_secs: 0,
     eta_secs: null,
-    current_operation: mode === "image" ? "Preparing image" : "Preparing clone",
+    current_operation:
+      mode === "image"
+        ? "Preparing image"
+        : mode === "restore"
+          ? "Preparing restore"
+          : "Preparing clone",
+  };
+}
+
+function completedRestoreProgress(jobId: string, targetBytes: number): Progress {
+  return {
+    job_id: jobId,
+    phase: "completed",
+    fraction: 1,
+    bytes_done: targetBytes,
+    bytes_total: targetBytes,
+    read_speed: 0,
+    write_speed: 0,
+    elapsed_secs: 0,
+    eta_secs: 0,
+    current_operation: "Restore workflow ready",
   };
 }
 
@@ -588,6 +734,19 @@ function failedProgress(bytesTotal: number, err: unknown): Progress {
     eta_secs: null,
     current_operation: err instanceof Error ? err.message : String(err),
   };
+}
+
+function restoreReportText(imagePath: string, targetPath: string): string {
+  return [
+    "# FlowClone restore report",
+    "",
+    `- Image: ${imagePath}`,
+    `- Target: ${targetPath}`,
+    "- Mode: Restore Image preview",
+    "- Result: completed",
+    "- Disk writes: stubbed",
+    "",
+  ].join("\n");
 }
 
 function parseInsufficientSpace(text: string): InsufficientSpaceDetails | null {

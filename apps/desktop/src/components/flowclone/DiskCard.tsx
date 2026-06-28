@@ -22,7 +22,7 @@ export function DiskCard({
   onSelect: () => void;
 }) {
   const { t } = useI18n();
-  const usedPct = disk.used_bytes
+  const usedPct = disk.used_bytes != null && disk.total_bytes > 0
     ? Math.min(100, (disk.used_bytes / disk.total_bytes) * 100)
     : null;
 
@@ -80,22 +80,22 @@ export function DiskCard({
           <Field label={t("serial")} value={disk.serial ?? "—"} />
         </dl>
 
-        {usedPct !== null && (
-          <div className="mt-4">
-            <div className="mb-1 flex justify-between text-xs text-muted">
-              <span>
-                {formatBytes(disk.used_bytes!)} {t("used")}
-              </span>
-              <span>{usedPct.toFixed(0)}%</span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-pill bg-elevated">
-              <div
-                className="h-full rounded-pill bg-primary"
-                style={{ width: `${usedPct}%` }}
-              />
-            </div>
+        <div className="mt-4">
+          <div className="mb-1 flex justify-between text-xs text-muted">
+            <span>
+              {disk.used_bytes != null
+                ? `${formatBytes(disk.used_bytes)} ${t("used")}`
+                : t("usageUnavailable")}
+            </span>
+            <span>{usedPct === null ? "—" : `${usedPct.toFixed(0)}%`}</span>
           </div>
-        )}
+          <div className="h-1.5 w-full overflow-hidden rounded-pill bg-elevated">
+            <div
+              className="h-full rounded-pill bg-primary"
+              style={{ width: `${usedPct ?? 0}%` }}
+            />
+          </div>
+        </div>
       </Card>
     </motion.button>
   );

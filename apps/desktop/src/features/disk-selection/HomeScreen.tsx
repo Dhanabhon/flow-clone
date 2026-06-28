@@ -1,14 +1,21 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
-import { FileArchive, HardDrive, RefreshCw } from "lucide-react";
+import { AlertTriangle, FileArchive, HardDrive, RefreshCw, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DiskCard } from "@/components/flowclone/DiskCard";
 import { FlowArrow } from "@/components/flowclone/FlowArrow";
 import { useDisks } from "@/hooks/use-disks";
 import { useFlowStore } from "@/stores/flow-store";
-import { createImageStub, isTauriRuntime } from "@/lib/tauri";
+import {
+  createImageStub,
+  discardPendingImage,
+  dismissPendingImage,
+  isTauriRuntime,
+  pendingImageJob,
+  type PendingImage,
+} from "@/lib/tauri";
 import { useI18n } from "@/lib/i18n";
 import { cn, fileNameFromPath, formatBytes, formatDuration } from "@/lib/utils";
 import type { DiskInfo, Progress } from "@/lib/types";
@@ -42,6 +49,30 @@ export function HomeScreen() {
     [disks]
   );
 
+  // Surface an image job that was interrupted by a crash or power loss.
+  const [pending, setPending] = useState<PendingImage | null>(null);
+  useEffect(() => {
+    let active = true;
+    pendingImageJob()
+      .then((job) => {
+        if (active) setPending(job);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function discardPending() {
+    await discardPendingImage();
+    setPending(null);
+  }
+
+  async function dismissPending() {
+    await dismissPendingImage();
+    setPending(null);
+  }
+
   const canStart = useMemo(() => {
     if (!source || !target) return false;
     if (source.device_path === target.device_path) return false;
@@ -53,6 +84,10 @@ export function HomeScreen() {
   const tooSmall =
     source && target && target.total_bytes < source.total_bytes;
   const isImageMode = mode === "image";
+  const isRestoreMode = mode === "restore";
+  const isCloneMode = mode === "clone";
+  const showTargetWarning =
+    !!target && (isRestoreMode || (isCloneMode && !tooSmall && !sameDisk));
   const imageSource =
     source && isSelectableDisk(source)
       ? source
@@ -68,6 +103,19 @@ export function HomeScreen() {
           filters: [{ name: t("flowCloneImage"), extensions: ["flowimg"] }],
         })
       : window.prompt(t("saveImagePrompt"), defaultImageName);
+    if (path) {
+      setImagePath(path);
+    }
+  }
+
+  async function chooseRestoreImage() {
+    const selected = isTauriRuntime()
+      ? await open({
+          multiple: false,
+          filters: [{ name: t("flowCloneImage"), extensions: ["flowimg"] }],
+        })
+      : window.prompt(t("openImagePrompt"), "");
+    const path = Array.isArray(selected) ? selected[0] : selected;
     if (path) {
       setImagePath(path);
     }
@@ -103,13 +151,27 @@ export function HomeScreen() {
         </p>
       </header>
 
+      {pending && (
+        <InterruptedJobBanner
+          pending={pending}
+          onDiscard={discardPending}
+          onDismiss={dismissPending}
+        />
+      )}
+
       <div className="mb-6 flex flex-wrap items-center justify-center gap-3">
-        <div className="inline-grid grid-cols-2 rounded-button border border-border bg-surface p-1 shadow-soft">
+        <div className="inline-grid grid-cols-3 rounded-button border border-border bg-surface p-1 shadow-soft">
           <ModeButton
             active={mode === "image"}
             icon={<FileArchive className="h-4 w-4" />}
             label={t("imageMigrationMode")}
             onClick={() => setMode("image")}
+          />
+          <ModeButton
+            active={mode === "restore"}
+            icon={<Upload className="h-4 w-4" />}
+            label={t("restoreImageMode")}
+            onClick={() => setMode("restore")}
           />
           <ModeButton
             active={mode === "clone"}
@@ -163,7 +225,19 @@ export function HomeScreen() {
         </div>
       )}
 
-      {!error && selectableDisks.length > 0 && !isImageMode && (
+      {!error && selectableDisks.length > 0 && isRestoreMode && (
+        <div className="mx-auto max-w-xl">
+          <Slot
+            label={t("target")}
+            disks={selectableDisks}
+            selected={target}
+            onSelect={setTarget}
+            emptyText={t("connectTargetDrive")}
+          />
+        </div>
+      )}
+
+      {!error && selectableDisks.length > 0 && isCloneMode && (
         <div className="grid grid-cols-1 items-center gap-6 lg:grid-cols-[1fr_auto_1fr]">
           <Slot
             label={t("source")}
@@ -197,7 +271,17 @@ export function HomeScreen() {
         />
       )}
 
-      {!isImageMode && target && !tooSmall && !sameDisk && (
+      {isRestoreMode && !error && selectableDisks.length > 0 && (
+        <RestoreImagePanel
+          canRestore={!!target && !!imagePath}
+          imagePath={imagePath}
+          target={target}
+          onChooseImage={chooseRestoreImage}
+          onRestore={() => goTo("confirmation")}
+        />
+      )}
+
+      {showTargetWarning && target && (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -207,18 +291,18 @@ export function HomeScreen() {
         </motion.div>
       )}
 
-      {!isImageMode && sameDisk && (
+      {isCloneMode && sameDisk && (
         <p className="mt-8 text-center text-sm text-danger">
           {t("sameDiskError")}
         </p>
       )}
-      {!isImageMode && tooSmall && (
+      {isCloneMode && tooSmall && (
         <p className="mt-8 text-center text-sm text-danger">
           {t("targetTooSmallError")}
         </p>
       )}
 
-      {!isImageMode && (
+      {isCloneMode && (
         <div className="mt-8 flex justify-center">
           <Button
             size="lg"
@@ -231,7 +315,7 @@ export function HomeScreen() {
         </div>
       )}
 
-      {!isImageMode && source && target && (
+      {isCloneMode && source && target && (
         <p className="mt-3 text-center text-xs text-muted">
           {formatBytes(source.total_bytes)} → {formatBytes(target.total_bytes)}
         </p>
@@ -354,6 +438,69 @@ function ImageMigrationPanel({
   );
 }
 
+function RestoreImagePanel({
+  canRestore,
+  imagePath,
+  target,
+  onChooseImage,
+  onRestore,
+}: {
+  canRestore: boolean;
+  imagePath: string | null;
+  target: DiskInfo | null;
+  onChooseImage: () => void;
+  onRestore: () => void;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mx-auto mt-8 max-w-3xl rounded-card border border-border bg-surface p-6 shadow-soft"
+    >
+      <h2 className="text-center text-lg font-semibold">
+        {t("restoreImageTitle")}
+      </h2>
+      <p className="mx-auto mt-2 max-w-2xl text-center text-sm text-muted">
+        {t("restoreImageBody")}
+      </p>
+
+      <div className="mt-6 grid gap-3 md:grid-cols-2">
+        <StepBlock
+          index="1"
+          title={t("restoreImageStep")}
+          body={
+            imagePath
+              ? fileNameFromPath(imagePath, "migration.flowimg")
+              : t("restoreImageEmpty")
+          }
+          emphasized={!!imagePath}
+        />
+        <StepBlock
+          index="2"
+          title={t("restoreTargetStep")}
+          body={
+            target
+              ? `${target.model} · ${formatBytes(target.total_bytes)}`
+              : t("restoreTargetEmpty")
+          }
+          emphasized={!!target}
+        />
+      </div>
+
+      <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
+        <Button variant="secondary" onClick={onChooseImage}>
+          {imagePath ? t("chooseDifferentImage") : t("chooseRestoreImage")}
+        </Button>
+        <Button disabled={!canRestore} onClick={onRestore}>
+          {t("restoreImageAction")}
+        </Button>
+      </div>
+    </motion.section>
+  );
+}
+
 function estimateImageDuration(bytes: number) {
   return formatDuration(bytes / IMAGE_ESTIMATE_BYTES_PER_SEC);
 }
@@ -455,6 +602,51 @@ function Slot({
         </div>
       )}
     </section>
+  );
+}
+
+function InterruptedJobBanner({
+  pending,
+  onDiscard,
+  onDismiss,
+}: {
+  pending: PendingImage;
+  onDiscard: () => void;
+  onDismiss: () => void;
+}) {
+  const { t } = useI18n();
+  const name = fileNameFromPath(pending.image_path, "migration.flowimg");
+  const progress =
+    pending.total_bytes > 0
+      ? `${formatBytes(pending.bytes_done)} / ${formatBytes(pending.total_bytes)}`
+      : formatBytes(pending.bytes_done);
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mx-auto mb-8 max-w-3xl rounded-card border border-warning/30 bg-warning/10 p-5 text-left"
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-warning">
+            {t("interruptedJobTitle")}
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            {t("interruptedJobBody", { name, progress })}
+          </p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <Button size="sm" variant="secondary" onClick={onDiscard}>
+              {t("discardPartialFile")}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={onDismiss}>
+              {t("dismiss")}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </motion.section>
   );
 }
 

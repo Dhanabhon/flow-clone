@@ -9,7 +9,7 @@ import type { DiskInfo, Progress } from "@/lib/types";
  */
 
 export type FlowPhase = "home" | "confirmation" | "cloning" | "completed";
-export type WorkflowMode = "clone" | "image";
+export type WorkflowMode = "clone" | "image" | "restore";
 
 interface FlowState {
   phase: FlowPhase;
@@ -48,8 +48,9 @@ export const useFlowStore = create<FlowState>((set) => ({
   setMode: (mode) =>
     set((state) => ({
       mode,
+      source: mode === "restore" ? null : state.source,
       target: mode === "image" ? null : state.target,
-      imagePath: mode === "clone" ? null : state.imagePath,
+      imagePath: state.mode === mode ? state.imagePath : null,
     })),
   setSource: (d) => set({ source: d }),
   setTarget: (d) => set({ target: d }),

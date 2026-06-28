@@ -1,7 +1,7 @@
 {
   "name": "flowclone",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "FlowClone — Safe SSD Cloning. Tauri v2 + React + Rust.",
   "license": "MIT",
   "packageManager": "pnpm@10.28.0",

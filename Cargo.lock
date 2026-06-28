@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "flowclone-disk",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "flowclone-disk",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-desktop"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "flowclone-core",
  "flowclone-disk",
@@ -828,9 +828,10 @@ dependencies = [
 
 [[package]]
 name = "flowclone-disk"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
+ "core-foundation-sys",
  "plist",
  "serde",
  "serde_json",
@@ -840,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-raw"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -852,7 +853,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-report"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "flowclone-disk",
@@ -865,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-verify"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "serde",

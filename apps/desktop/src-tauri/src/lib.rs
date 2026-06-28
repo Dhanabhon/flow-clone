@@ -7,8 +7,73 @@ mod commands;
 
 use flowclone_core::CloneEngine;
 use std::sync::{Arc, Mutex};
+use tauri::menu::{
+    AboutMetadata, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
+use tauri::Emitter;
 #[cfg(debug_assertions)]
 use tauri::Manager;
+
+/// Build the application menu.
+///
+/// Tauri's default menu labels every item with the crate name
+/// (`flowclone-desktop`). This replaces it so the app menu reads "FlowClone",
+/// adds a "Check For Update..." item (no behavior yet), and keeps the standard
+/// Edit menu so text inputs still get Cut/Copy/Paste/Select All.
+fn build_menu<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    let about_metadata = AboutMetadata {
+        name: Some("FlowClone".into()),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
+        // Embed the app icon so the About panel shows the FlowClone logo instead
+        // of the generic icon shown when running unbundled (e.g. `pnpm dev`).
+        icon: Some(tauri::include_image!("icons/icon.png")),
+        ..Default::default()
+    };
+
+    // `SubmenuBuilder::about` auto-labels the item "About {crate name}", so set
+    // the label explicitly to force "About FlowClone".
+    let about = PredefinedMenuItem::about(handle, Some("About FlowClone"), Some(about_metadata))?;
+
+    // No handler is wired yet — the item is intentionally inert for now.
+    let check_for_update =
+        MenuItemBuilder::with_id("check_for_update", "Check For Update...").build(handle)?;
+
+    let app_menu = SubmenuBuilder::new(handle, "FlowClone")
+        .item(&about)
+        .separator()
+        .item(&check_for_update)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(handle, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let window_menu = SubmenuBuilder::new(handle, "Window")
+        .minimize()
+        .separator()
+        .close_window()
+        .build()?;
+
+    MenuBuilder::new(handle)
+        .items(&[&app_menu, &edit_menu, &window_menu])
+        .build()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,6 +87,7 @@ pub fn run() {
     let image_cancel: commands::ImageCancelState = Arc::new(Mutex::new(None));
 
     tauri::Builder::default()
+        .menu(build_menu)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -37,6 +103,9 @@ pub fn run() {
             commands::generate_report_stub,
             commands::cancel_clone,
             commands::open_full_disk_access_settings,
+            commands::pending_image_job,
+            commands::discard_pending_image,
+            commands::dismiss_pending_image,
         ])
         .setup(|app| {
             // DevTools are disabled in release builds by default: the `devtools`
@@ -52,9 +121,12 @@ pub fn run() {
                     }
                 }
             }
-            // Touch `app` in release builds so the closure param isn't unused.
-            #[cfg(not(debug_assertions))]
-            let _ = app;
+            // Refresh the disk list event-driven instead of polling: emit a
+            // `disks://changed` event whenever storage attaches or detaches.
+            let watch_handle = app.handle().clone();
+            flowclone_disk::platform_disk_watcher().start(Box::new(move || {
+                let _ = watch_handle.emit("disks://changed", ());
+            }));
             Ok(())
         })
         .run(tauri::generate_context!())

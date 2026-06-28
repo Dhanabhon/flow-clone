@@ -7,9 +7,11 @@
 pub mod linux;
 pub mod macos;
 pub mod model;
+pub mod watcher;
 pub mod windows;
 
 pub use model::{Connection, DiskInfo, Health};
+pub use watcher::{platform_disk_watcher, DiskWatcher};
 
 use std::sync::Arc;
 
