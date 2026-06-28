@@ -306,7 +306,7 @@ function CloningScreen() {
           <div
             className="mx-auto mt-8 grid h-40 w-40 place-items-center rounded-full"
             style={{
-              background: `conic-gradient(var(--primary) ${pct}%, var(--elevated) ${pct}% 100%)`,
+              background: `conic-gradient(rgb(var(--primary)) ${pct}%, rgb(var(--elevated)) ${pct}% 100%)`,
             }}
           >
             <div className="grid h-32 w-32 place-items-center rounded-full bg-background text-4xl font-semibold">

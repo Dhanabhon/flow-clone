@@ -5,17 +5,18 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Light tokens (see DESIGN.md)
-        background: "var(--bg)",
-        surface: "var(--surface)",
-        elevated: "var(--elevated)",
-        border: "var(--border)",
-        primary: "var(--primary)",
-        success: "var(--success)",
-        warning: "var(--warning)",
-        danger: "var(--danger)",
-        text: "var(--text)",
-        muted: "var(--muted)",
+        // Tokens are `rgb(var(--x) / <alpha-value>)` so opacity modifiers work
+        // (bg-surface/80, bg-warning/10, …). Channel values live in globals.css.
+        background: "rgb(var(--bg) / <alpha-value>)",
+        surface: "rgb(var(--surface) / <alpha-value>)",
+        elevated: "rgb(var(--elevated) / <alpha-value>)",
+        border: "rgb(var(--border) / <alpha-value>)",
+        primary: "rgb(var(--primary) / <alpha-value>)",
+        success: "rgb(var(--success) / <alpha-value>)",
+        warning: "rgb(var(--warning) / <alpha-value>)",
+        danger: "rgb(var(--danger) / <alpha-value>)",
+        text: "rgb(var(--text) / <alpha-value>)",
+        muted: "rgb(var(--muted) / <alpha-value>)",
       },
       borderRadius: {
         card: "20px",

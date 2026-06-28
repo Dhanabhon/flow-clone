@@ -7,32 +7,39 @@
  * class on <html>. Tabular figures keep progress numbers from jumping.
  */
 @layer base {
+  /*
+   * Tokens are space-separated RGB channels so Tailwind's `<alpha-value>`
+   * opacity modifiers work (e.g. bg-surface/80, bg-warning/10). See the
+   * `rgb(var(--x) / <alpha-value>)` color definitions in tailwind.config.js.
+   * `--primary-glow` is a full rgba() because it is consumed directly in a
+   * box-shadow, not as a Tailwind color token.
+   */
   :root {
-    --bg: #f7f8fa;
-    --surface: #ffffff;
-    --elevated: #ffffff;
-    --border: #e5e7eb;
-    --primary: #3b82f6;
+    --bg: 247 248 250;
+    --surface: 255 255 255;
+    --elevated: 255 255 255;
+    --border: 229 231 235;
+    --primary: 59 130 246;
     --primary-glow: rgba(59, 130, 246, 0.25);
-    --success: #22c55e;
-    --warning: #f59e0b;
-    --danger: #ef4444;
-    --text: #111827;
-    --muted: #6b7280;
+    --success: 34 197 94;
+    --warning: 245 158 11;
+    --danger: 239 68 68;
+    --text: 17 24 39;
+    --muted: 107 114 128;
   }
 
   .dark {
-    --bg: #0f1115;
-    --surface: #171a21;
-    --elevated: #1d212a;
-    --border: #2a2f39;
-    --primary: #4f8cff;
+    --bg: 15 17 21;
+    --surface: 23 26 33;
+    --elevated: 29 33 42;
+    --border: 42 47 57;
+    --primary: 79 140 255;
     --primary-glow: rgba(79, 140, 255, 0.25);
-    --success: #34d399;
-    --warning: #fbbf24;
-    --danger: #f87171;
-    --text: #f9fafb;
-    --muted: #9ca3af;
+    --success: 52 211 153;
+    --warning: 251 191 36;
+    --danger: 248 113 113;
+    --text: 249 250 251;
+    --muted: 156 163 175;
   }
 
   body {
