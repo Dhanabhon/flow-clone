@@ -8,16 +8,23 @@ workspace behind it.
 
 ## Safety warning
 
-FlowClone can now create and restore raw disk images on macOS.
+FlowClone can now create and restore raw disk images on macOS and Windows.
 
 - **Image Migration** reads a source disk into a `.flowimg` file (read-only on
   the source).
 - **Restore Image** writes a `.flowimg` back onto a target disk — **this is
   destructive and erases the target**.
 
-Both need elevated raw-disk access: a macOS admin prompt, plus **Full Disk
-Access** granted to the responsible app. **Direct Clone** is temporarily
-disabled in this release, and verification is still stubbed.
+Both need elevated raw-disk access:
+
+- **macOS** — an admin prompt, plus **Full Disk Access** granted to the
+  responsible app.
+- **Windows** — a **UAC** prompt (Run as administrator). No separate Full Disk
+  Access grant is needed. Restore locks and dismounts the target's volumes
+  before writing; close anything using the target disk first.
+
+**Direct Clone** is temporarily disabled in this release, and verification is
+still stubbed.
 
 ## MVP scope
 
