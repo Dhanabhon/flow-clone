@@ -1,3 +1,9 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# Approve install/build scripts for these dependencies. pnpm blocks all
+# dependency build scripts by default for supply-chain safety; esbuild needs
+# its script to place the platform binary, so allow just that one.
+allowBuilds:
+  esbuild: true
