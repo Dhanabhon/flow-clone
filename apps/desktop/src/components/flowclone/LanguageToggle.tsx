@@ -39,7 +39,7 @@ export function LanguageToggle() {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((next) => !next)}
-        className="flex h-8 w-[132px] items-center justify-between rounded-pill px-3 text-sm font-semibold text-text transition hover:bg-white/70 focus:outline-none focus:ring-2 focus:ring-primary dark:hover:bg-elevated"
+        className="flex h-8 w-[132px] items-center justify-between rounded-pill px-3 text-sm font-semibold text-[#1f2937] transition hover:bg-white/70 focus:outline-none focus:ring-2 focus:ring-primary"
       >
         <span className="flex items-center gap-2">
           <FlagIcon locale={active.value} />
@@ -47,7 +47,7 @@ export function LanguageToggle() {
         </span>
         <ChevronDown
           className={cn(
-            "h-4 w-4 text-muted transition-transform",
+            "h-4 w-4 text-[#6b7280] transition-transform",
             open && "rotate-180"
           )}
           strokeWidth={2}
