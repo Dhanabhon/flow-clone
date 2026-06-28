@@ -7,14 +7,25 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+mod win;
+
 const FLOW_IMAGE_FORMAT: &str = "flowclone-image";
 const FLOW_IMAGE_MAGIC: &[u8] = b"FLOWCLONE_FLOWIMG_V1\n";
 const FLOW_IMAGE_VERSION: u64 = 1;
 const IMAGE_BLOCK_SIZE: usize = 4 * 1024 * 1024;
+// Raw `\\.\PHYSICALDRIVE` reads/writes on Windows must be whole-sector multiples
+// (incl. 4Kn disks). Keeping the block a 4096-multiple guarantees every full
+// block is sector-aligned; only the final partial block needs special handling.
+const _: () = assert!(
+    IMAGE_BLOCK_SIZE % 4096 == 0,
+    "IMAGE_BLOCK_SIZE must be a multiple of 4096 to keep raw disk I/O sector-aligned"
+);
 /// Reject image headers larger than this — guards against a corrupt length field.
 const MAX_IMAGE_HEADER_BYTES: u64 = 1024 * 1024;
 /// macOS errno for "Inappropriate ioctl for device" — fsync on an unbuffered
 /// raw device returns this, and it's safe to ignore.
+#[cfg(not(target_os = "windows"))]
 const ENOTTY: i32 = 25;
 /// Wait between attempts to re-acquire a disk that dropped off the bus.
 const READ_RECOVERY_WAIT: Duration = Duration::from_secs(3);
@@ -36,6 +47,8 @@ fn main() -> Result<()> {
         "list-disks" | "ls" => list_disks(),
         "create-image" => create_image(),
         "restore-image" => restore_image(),
+        #[cfg(target_os = "windows")]
+        "list-volumes" => list_volumes(),
         "version" | "--version" | "-v" => {
             println!("flowclone {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -50,6 +63,20 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Diagnostic (Windows): show which physical disk each volume maps to. This is
+/// the same matching the destructive restore uses to pick volumes to dismount,
+/// so it's a safe, read-only way to confirm it targets the right disk.
+#[cfg(target_os = "windows")]
+fn list_volumes() -> Result<()> {
+    for (volume, disk) in win::volume_disk_map() {
+        let disk = disk
+            .map(|number| format!("PHYSICALDRIVE{number}"))
+            .unwrap_or_else(|| "?".into());
+        println!("{disk:<16} {volume}");
+    }
+    Ok(())
 }
 
 fn list_disks() -> Result<()> {
@@ -95,19 +122,91 @@ fn create_image() -> Result<()> {
     let _ = std::fs::remove_file(cancel_sentinel_path(output_path));
 
     // macOS blocks raw reads of blocks backing a *mounted* filesystem (reads
-    // return ENXIO / "Device not configured" once they reach a mounted volume).
-    // Unmount the disk's volumes first; the whole-disk device stays available
-    // for raw reads. Remount afterward so the disk reappears for the user.
-    unmount_disk(&source.device_path)?;
-    let result = create_flow_image_file(&raw_source, output_path, &source);
-    remount_disk(&source.device_path);
-    result?;
+    // return ENXIO / "Device not configured" once they reach a mounted volume),
+    // so it unmounts the disk's volumes first and remounts them on drop. Windows
+    // serves raw reads while mounted, so its prep is a no-op.
+    let _prep = prepare_source_for_read(&source.device_path)?;
+    create_flow_image_file(&raw_source, output_path, &source)?;
     Ok(())
 }
 
-/// Unmount every volume on a whole disk so its blocks can be read raw.
+/// Undoes the disk preparation done by [`prepare_source_for_read`] /
+/// [`prepare_target_for_write`] when dropped, restoring the disk's normal
+/// mounted state regardless of whether the operation succeeded. An all-`None`
+/// value (the default) is a no-op guard, used where a platform needs no prep.
+#[derive(Default)]
+struct DiskPrep {
+    /// macOS: the disk to remount via `diskutil` on drop.
+    #[cfg(target_os = "macos")]
+    remount_device: Option<String>,
+    /// Windows: the held volume locks. Held only for their `Drop`, which releases
+    /// the locks and rescans the disk so its volumes re-mount (`win::VolumeLocks`).
+    #[cfg(target_os = "windows")]
+    _windows: Option<win::VolumeLocks>,
+}
+
+impl Drop for DiskPrep {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(device_path) = &self.remount_device {
+            remount_disk(device_path);
+        }
+        // On Windows the `windows` field drops itself here, which releases the
+        // volume locks and rescans the disk.
+    }
+}
+
+/// Prepare a disk so its whole-disk device can be read raw.
+#[cfg(target_os = "macos")]
+fn prepare_source_for_read(device_path: &str) -> Result<DiskPrep> {
+    unmount_disk(device_path)?;
+    Ok(DiskPrep {
+        remount_device: Some(device_path.to_string()),
+    })
+}
+
+/// Prepare a disk so its whole-disk device can be written raw.
+#[cfg(target_os = "macos")]
+fn prepare_target_for_write(device_path: &str) -> Result<DiskPrep> {
+    unmount_disk(device_path)?;
+    Ok(DiskPrep {
+        remount_device: Some(device_path.to_string()),
+    })
+}
+
+/// Windows serves raw reads of a mounted disk, so nothing needs to be done.
+#[cfg(target_os = "windows")]
+fn prepare_source_for_read(_device_path: &str) -> Result<DiskPrep> {
+    Ok(DiskPrep::default())
+}
+
+/// Windows rejects writes to sectors owned by a mounted filesystem, so lock and
+/// dismount every volume on the target and hold the locks for the write.
+#[cfg(target_os = "windows")]
+fn prepare_target_for_write(device_path: &str) -> Result<DiskPrep> {
+    let disk_number = win::disk_number_from_path(device_path)
+        .ok_or_else(|| anyhow::anyhow!("not a physical drive path: {device_path}"))?;
+    eprintln!("dismount: locking volumes on {device_path} for an exclusive write");
+    let locks = win::lock_and_dismount_disk(disk_number)?;
+    Ok(DiskPrep {
+        _windows: Some(locks),
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn prepare_source_for_read(_device_path: &str) -> Result<DiskPrep> {
+    Ok(DiskPrep::default())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn prepare_target_for_write(_device_path: &str) -> Result<DiskPrep> {
+    Ok(DiskPrep::default())
+}
+
+/// Unmount every volume on a whole disk so its blocks can be read/written raw.
+#[cfg(target_os = "macos")]
 fn unmount_disk(device_path: &str) -> Result<()> {
-    eprintln!("unmount: {device_path} (so raw reads aren't blocked by mounts)");
+    eprintln!("unmount: {device_path} (so raw I/O isn't blocked by mounts)");
     let output = std::process::Command::new("diskutil")
         .args(["unmountDisk", device_path])
         .output()
@@ -123,6 +222,7 @@ fn unmount_disk(device_path: &str) -> Result<()> {
 }
 
 /// Best-effort remount so the disk's volumes reappear after imaging.
+#[cfg(target_os = "macos")]
 fn remount_disk(device_path: &str) {
     let _ = std::process::Command::new("diskutil")
         .args(["mountDisk", device_path])
@@ -189,10 +289,8 @@ fn restore_image() -> Result<()> {
         target.device_path,
         humansize(info.payload_bytes)
     );
-    unmount_disk(&target.device_path)?;
-    let result = write_image_to_target(image_path, &raw_target, &info);
-    remount_disk(&target.device_path);
-    result?;
+    let _prep = prepare_target_for_write(&target.device_path)?;
+    write_image_to_target(image_path, &raw_target, &info)?;
     Ok(())
 }
 
@@ -279,7 +377,11 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
     image
         .seek(SeekFrom::Start(info.data_offset))
         .map_err(|error| anyhow::anyhow!("seek to image payload: {error}"))?;
+    // Read access too: Windows opens a `\\.\PHYSICALDRIVE` for raw writes with
+    // GENERIC_READ | GENERIC_WRITE, and read+write is harmless on a raw Unix
+    // device opened by the elevated worker.
     let mut target = OpenOptions::new()
+        .read(true)
         .write(true)
         .open(raw_target)
         .map_err(|error| anyhow::anyhow!("open target {raw_target} for write: {error}"))?;
@@ -288,6 +390,12 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
     // small progress file the GUI reads instead. Clear any stale one first.
     let progress_path = restore_progress_path(image_path);
     let _ = std::fs::remove_file(&progress_path);
+
+    // The target's logical sector size. Full blocks are always sector-aligned,
+    // but the final partial block must be rounded up to a whole sector — the
+    // image's payload size is a multiple of the *source* sector size, which can
+    // be smaller than the target's (e.g. a 512e image onto a 4Kn disk).
+    let sector = write_alignment(raw_target);
 
     let start = Instant::now();
     let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
@@ -303,7 +411,14 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
         image.read_exact(&mut buf[..remaining]).map_err(|error| {
             anyhow::anyhow!("read image at payload offset {bytes_done}: {error}")
         })?;
-        target.write_all(&buf[..remaining]).map_err(|error| {
+        // Pad the final block up to a whole sector with zeros so the raw write is
+        // sector-aligned. The padding lands in slack past the image's end (the
+        // target is >= the payload and a whole number of sectors), so it's safe.
+        let write_len = round_up(remaining, sector);
+        if write_len > remaining {
+            buf[remaining..write_len].fill(0);
+        }
+        target.write_all(&buf[..write_len]).map_err(|error| {
             anyhow::anyhow!(
                 "write target {raw_target} at offset {} ({}): {error}",
                 bytes_done,
@@ -330,11 +445,11 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
     }
     let _ = std::fs::remove_file(&progress_path);
 
-    // Raw character devices (/dev/rdiskN) are unbuffered, so writes are already
-    // durable and fsync isn't supported — it returns ENOTTY (errno 25). Tolerate
-    // that; surface any other flush error.
+    // Raw devices are unbuffered, so writes are already durable and a flush isn't
+    // meaningful — macOS returns ENOTTY, Windows returns "invalid function". Both
+    // are benign; surface any other flush error.
     if let Err(error) = target.sync_all() {
-        if error.raw_os_error() != Some(ENOTTY) {
+        if !flush_error_is_benign(&error) {
             return Err(anyhow::anyhow!("flush target {raw_target}: {error}"));
         }
     }
@@ -397,10 +512,50 @@ fn same_disk(candidate: &DiskInfo, source: &DiskInfo) -> bool {
 }
 
 /// Unmount without failing the caller — used while recovering from a drop.
+/// macOS must clear mounts to read raw; Windows reads while mounted, so no-op.
+#[cfg(target_os = "macos")]
 fn unmount_disk_quiet(device_path: &str) {
     let _ = std::process::Command::new("diskutil")
         .args(["unmountDisk", device_path])
         .output();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unmount_disk_quiet(_device_path: &str) {}
+
+/// Whether a flush error on a raw device handle is benign (the device is
+/// unbuffered, so the flush is a no-op the kernel may reject).
+#[cfg(target_os = "windows")]
+fn flush_error_is_benign(error: &std::io::Error) -> bool {
+    win::flush_error_is_benign(error)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn flush_error_is_benign(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(ENOTTY)
+}
+
+/// Round `value` up to the next multiple of `align` (`align` >= 1).
+fn round_up(value: usize, align: usize) -> usize {
+    debug_assert!(align >= 1);
+    value.div_ceil(align) * align
+}
+
+/// The granularity raw writes to `raw_target` must use. Only real Windows
+/// physical-disk devices require whole-sector writes; regular files (tests, any
+/// non-device target) and other platforms' raw devices accept any length.
+#[cfg(target_os = "windows")]
+fn write_alignment(raw_target: &str) -> usize {
+    if win::disk_number_from_path(raw_target).is_some() {
+        win::logical_sector_size(raw_target) as usize
+    } else {
+        1
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn write_alignment(_raw_target: &str) -> usize {
+    1
 }
 
 fn arg_value<'a>(args: &'a [String], name: &str) -> Result<&'a str> {

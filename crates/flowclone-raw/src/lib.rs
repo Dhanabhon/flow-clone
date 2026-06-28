@@ -14,6 +14,7 @@ pub mod writer;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -65,6 +66,11 @@ fn reclaimable_output_bytes(output_path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Free bytes available on the volume backing `path`.
+///
+/// Unix shells out to `df`; Windows asks the kernel via `GetDiskFreeSpaceExW`
+/// (there is no `df` there). Both return the space available to the caller.
+#[cfg(not(target_os = "windows"))]
 fn available_space_bytes(path: &Path) -> anyhow::Result<u64> {
     let output = Command::new("df")
         .args(["-P", "-k"])
@@ -77,6 +83,50 @@ fn available_space_bytes(path: &Path) -> anyhow::Result<u64> {
     parse_df_available_kib(&String::from_utf8_lossy(&output.stdout)).map(|kib| kib * 1024)
 }
 
+#[cfg(target_os = "windows")]
+fn available_space_bytes(path: &Path) -> anyhow::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lpDirectoryName: *const u16,
+            lpFreeBytesAvailableToCaller: *mut u64,
+            lpTotalNumberOfBytes: *mut u64,
+            lpTotalNumberOfFreeBytes: *mut u64,
+        ) -> i32;
+    }
+
+    // A null-terminated UTF-16 directory path; the kernel reports the free space
+    // on whichever volume backs it.
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut free_to_caller: u64 = 0;
+    // SAFETY: `wide` is a valid null-terminated UTF-16 string that outlives the
+    // call; the out-pointer is a live local and the other two are allowed to be
+    // null per the API contract.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_to_caller,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        let error = std::io::Error::last_os_error();
+        anyhow::bail!(
+            "failed to check free disk space for {}: {error}",
+            path.display()
+        );
+    }
+    Ok(free_to_caller)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn parse_df_available_kib(output: &str) -> anyhow::Result<u64> {
     let line = output
         .lines()
@@ -367,6 +417,7 @@ mod tests {
         _accepts(&NoProgress);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn parses_df_available_space() {
         let output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s1 1000000 1000 998000 1% /tmp\n";

@@ -510,8 +510,8 @@ fn is_cli_binary_name(name: &str) -> bool {
                 || name.contains("-unknown-linux-")))
 }
 
-/// Run `flowclone create-image` as root via a native macOS admin prompt.
 /// Run the bundled CLI as root via a native macOS admin prompt.
+#[cfg(target_os = "macos")]
 fn run_elevated(cli: &Path, args: &[&str], fail_prefix: &str) -> Result<(), String> {
     let mut shell_command = posix_quote(&cli.to_string_lossy());
     for arg in args {
@@ -541,13 +541,88 @@ fn run_elevated(cli: &Path, args: &[&str], fail_prefix: &str) -> Result<(), Stri
 }
 
 /// Single-quote a value for safe use as one `/bin/sh` argument.
+#[cfg(target_os = "macos")]
 fn posix_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Escape a string for use as an AppleScript double-quoted string literal.
+#[cfg(target_os = "macos")]
 fn applescript_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Run the bundled CLI elevated via a Windows UAC prompt.
+///
+/// PowerShell's `Start-Process -Verb RunAs` raises the consent dialog, runs the
+/// CLI as administrator, and (with `-Wait`) blocks until it finishes — the same
+/// shape as the macOS `osascript` path. An elevated `RunAs` process can't have
+/// its stdio redirected, so progress/cancel still flow through the CLI's files;
+/// here we only need its success/failure, taken from the exit code.
+#[cfg(target_os = "windows")]
+fn run_elevated(cli: &Path, args: &[&str], fail_prefix: &str) -> Result<(), String> {
+    let file = ps_single_quote(&cli.to_string_lossy());
+    let arg_list = if args.is_empty() {
+        "@()".to_string()
+    } else {
+        let joined = args
+            .iter()
+            .map(|arg| ps_runas_arg(arg))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("@({joined})")
+    };
+    // `exit 1223` == ERROR_CANCELLED: Start-Process throws when the user declines
+    // the UAC prompt. Otherwise propagate the CLI's own exit code.
+    let script = format!(
+        "$ErrorActionPreference='Stop'; \
+         try {{ $p = Start-Process -FilePath {file} -ArgumentList {arg_list} -Verb RunAs -Wait -PassThru; \
+         if ($null -eq $p.ExitCode) {{ exit 0 }} else {{ exit $p.ExitCode }} }} \
+         catch {{ exit 1223 }}"
+    );
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .map_err(|error| format!("failed to launch elevation prompt: {error}"))?;
+
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(1223) => Err("Admin authorization was cancelled.".into()),
+        Some(code) => Err(format!(
+            "{fail_prefix}: the elevated helper exited with code {code}"
+        )),
+        None => Err(format!("{fail_prefix}: the elevated helper was terminated")),
+    }
+}
+
+/// Single-quote a value as one PowerShell string literal.
+#[cfg(target_os = "windows")]
+fn ps_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Encode one CLI argument for `Start-Process -ArgumentList`: PowerShell joins
+/// the array with spaces and adds no quoting, so wrap the token in double quotes
+/// (surviving spaces in paths) and then express that as a PS string literal.
+#[cfg(target_os = "windows")]
+fn ps_runas_arg(value: &str) -> String {
+    let quoted_token = format!("\"{}\"", value.replace('"', "\\\""));
+    format!("'{}'", quoted_token.replace('\'', "''"))
+}
+
+/// Desktop builds only ship for macOS and Windows; other targets have no
+/// elevation path.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn run_elevated(_cli: &Path, _args: &[&str], _fail_prefix: &str) -> Result<(), String> {
+    Err("elevated disk access is not supported on this platform".into())
 }
 
 fn set_image_cancel(
@@ -752,7 +827,8 @@ fn cancel_sentinel_path(image_path: &str) -> String {
 /// Marker recording an in-flight image job, kept in the user's home so it
 /// survives a crash or power loss (unlike the temp dir, which can be cleared).
 fn pending_marker_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
+    // `HOME` on Unix; `USERPROFILE` is the Windows equivalent.
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(
         PathBuf::from(home)
             .join(".flowclone")
