@@ -175,6 +175,11 @@ export const cancelClone = (): Promise<void> => {
   return Promise.resolve();
 };
 
+export const ejectDisk = (devicePath: string): Promise<void> =>
+  isTauriRuntime()
+    ? invoke("eject_disk", { devicePath })
+    : Promise.reject(new Error("Eject is only available in the desktop app."));
+
 export function openFullDiskAccessSettings(): Promise<void> {
   if (isTauriRuntime()) return invoke("open_full_disk_access_settings");
   window.location.assign(

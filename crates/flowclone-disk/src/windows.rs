@@ -149,7 +149,10 @@ fn map_disk(d: PsDisk) -> DiskInfo {
         .filter(|s| !s.is_empty());
 
     let filesystem = d.fs.filter(|s| !s.is_empty());
-    let label = d.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let label = d
+        .label
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let letters: Vec<String> = d
         .letters
         .unwrap_or_default()
@@ -191,8 +194,9 @@ fn map_bus(bus: Option<&str>) -> Connection {
         "usb" => Connection::Usb,
         "1394" => Connection::Firewire,
         "iscsi" | "fibre channel" => Connection::Network,
-        "sata" | "ata" | "nvme" | "scsi" | "sas" | "raid" | "spaces"
-        | "file backed virtual" => Connection::Internal,
+        "sata" | "ata" | "nvme" | "scsi" | "sas" | "raid" | "spaces" | "file backed virtual" => {
+            Connection::Internal
+        }
         _ => Connection::Unknown,
     }
 }

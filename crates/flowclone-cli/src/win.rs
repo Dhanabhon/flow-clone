@@ -198,7 +198,7 @@ pub fn lock_and_dismount_disk(disk_number: u32) -> Result<VolumeLocks> {
                     return Err(anyhow!(
                         "could not determine which physical disk volume {volume} belongs to; \
                          aborting the restore rather than risk writing under a mounted filesystem"
-                    ))
+                    ));
                 }
             },
             Err(error) if is_no_media_error(&error) => continue, // empty bay, not the target

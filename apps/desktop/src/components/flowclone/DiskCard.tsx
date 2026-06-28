@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { HardDrive } from "lucide-react";
+import { ArrowUpFromLine, HardDrive } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
@@ -15,30 +15,34 @@ export function DiskCard({
   selected,
   disabled,
   onSelect,
+  onEject,
 }: {
   disk: DiskInfo;
   selected: boolean;
   disabled?: boolean;
   onSelect: () => void;
+  onEject?: () => void;
 }) {
   const { t } = useI18n();
   const usedPct = disk.used_bytes != null && disk.total_bytes > 0
     ? Math.min(100, (disk.used_bytes / disk.total_bytes) * 100)
     : null;
+  const canEject = !!onEject && disk.connection !== "internal" && !disk.is_boot;
 
   return (
-    <motion.button
-      type="button"
-      whileHover={disabled ? undefined : { y: -2 }}
-      onClick={onSelect}
-      disabled={disabled}
-      aria-pressed={selected}
-      className={cn(
-        "w-full rounded-card text-left transition-all duration-200 ease-out-soft",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-        disabled && "cursor-not-allowed opacity-50"
-      )}
-    >
+    <div className="relative">
+      <motion.button
+        type="button"
+        whileHover={disabled ? undefined : { y: -2 }}
+        onClick={onSelect}
+        disabled={disabled}
+        aria-pressed={selected}
+        className={cn(
+          "w-full rounded-card text-left transition-all duration-200 ease-out-soft",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+          disabled && "cursor-not-allowed opacity-50"
+        )}
+      >
       <Card
         className={cn(
           "p-6",
@@ -55,7 +59,7 @@ export function DiskCard({
               <p className="text-sm text-muted">{disk.device_path}</p>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-1">
+          <div className={cn("flex flex-col items-end gap-1", canEject && "pr-9")}>
             {disk.health === "healthy" && (
               <Badge tone="success">{t("healthy")}</Badge>
             )}
@@ -97,7 +101,22 @@ export function DiskCard({
           </div>
         </div>
       </Card>
-    </motion.button>
+      </motion.button>
+      {canEject && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEject?.();
+          }}
+          title={t("eject")}
+          aria-label={t("eject")}
+          className="absolute right-3 top-3 z-10 grid h-8 w-8 place-items-center rounded-button border border-border bg-surface text-muted shadow-soft transition hover:bg-elevated hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <ArrowUpFromLine className="h-4 w-4" strokeWidth={2} />
+        </button>
+      )}
+    </div>
   );
 }
 

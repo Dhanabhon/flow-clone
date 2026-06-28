@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
 import { AlertTriangle, FileArchive, HardDrive, RefreshCw, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import {
   createImageStub,
   discardPendingImage,
   dismissPendingImage,
+  ejectDisk,
   isTauriRuntime,
   pendingImageJob,
   type PendingImage,
@@ -71,6 +72,20 @@ export function HomeScreen() {
   async function dismissPending() {
     await dismissPendingImage();
     setPending(null);
+  }
+
+  async function eject(disk: DiskInfo) {
+    try {
+      await ejectDisk(disk.device_path);
+      // The disk list refreshes automatically via the native watcher when the
+      // device disappears.
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await message(t("ejectFailedBody", { name: disk.model, message: detail }), {
+        title: t("ejectFailed"),
+        kind: "error",
+      });
+    }
   }
 
   const canStart = useMemo(() => {
@@ -222,6 +237,7 @@ export function HomeScreen() {
             disks={selectableDisks}
             selected={imageSource}
             onSelect={setSource}
+            onEject={eject}
             emptyText={t("connectDrives")}
           />
         </div>
@@ -234,6 +250,7 @@ export function HomeScreen() {
             disks={selectableDisks}
             selected={target}
             onSelect={setTarget}
+            onEject={eject}
             emptyText={t("connectTargetDrive")}
           />
         </div>
@@ -247,6 +264,7 @@ export function HomeScreen() {
             selected={source}
             exclude={target?.device_path}
             onSelect={setSource}
+            onEject={eject}
             emptyText={t("connectDrives")}
           />
 
@@ -258,6 +276,7 @@ export function HomeScreen() {
             selected={target}
             exclude={source?.device_path}
             onSelect={setTarget}
+            onEject={eject}
             emptyText={t("connectTargetDrive")}
           />
         </div>
@@ -580,6 +599,7 @@ function Slot({
   selected,
   exclude,
   onSelect,
+  onEject,
   emptyText,
 }: {
   label: string;
@@ -587,6 +607,7 @@ function Slot({
   selected: DiskInfo | null;
   exclude?: string;
   onSelect: (d: DiskInfo | null) => void;
+  onEject?: (d: DiskInfo) => void;
   emptyText: string;
 }) {
   const available = disks.filter((d) => d.device_path !== exclude);
@@ -601,6 +622,7 @@ function Slot({
           disk={selected}
           selected
           onSelect={() => onSelect(null)}
+          onEject={onEject ? () => onEject(selected) : undefined}
         />
       ) : (
         <div className="flex flex-col gap-3">
@@ -616,6 +638,7 @@ function Slot({
                 selected={false}
                 disabled={d.is_boot || d.read_only}
                 onSelect={() => onSelect(d)}
+                onEject={onEject ? () => onEject(d) : undefined}
               />
             ))
           )}

@@ -1248,6 +1248,62 @@ pub async fn open_full_disk_access_settings() -> Result<(), String> {
     }
 }
 
+/// Safely eject / power down a disk so it can be unplugged. Not destructive and
+/// does not require elevation; the UI only offers it for external disks.
+#[tauri::command]
+pub async fn eject_disk(device_path: String) -> Result<(), String> {
+    eject_device(&device_path)
+}
+
+#[cfg(target_os = "macos")]
+fn eject_device(device_path: &str) -> Result<(), String> {
+    let output = Command::new("diskutil")
+        .args(["eject", device_path])
+        .output()
+        .map_err(|error| format!("failed to run diskutil eject: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn eject_device(device_path: &str) -> Result<(), String> {
+    // device_path looks like `\\.\PhysicalDriveN` / `PhysicalDriveN`; eject its
+    // volumes via the Shell "Eject" verb (the user-level Safely Remove path).
+    let number: String = device_path
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if number.is_empty() {
+        return Err(format!("could not parse disk number from {device_path}"));
+    }
+    let script = format!(
+        "$ls=(Get-Partition -DiskNumber {number} -ErrorAction SilentlyContinue).DriveLetter | ? {{$_}}; \
+         $sh=New-Object -comObject Shell.Application; \
+         foreach($l in $ls){{$sh.Namespace(17).ParseName(\"$l`:\").InvokeVerb('Eject')}}"
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|error| format!("failed to run eject: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn eject_device(_device_path: &str) -> Result<(), String> {
+    Err("eject is not supported on this platform yet".into())
+}
+
 fn find_disk(path: &str) -> Result<DiskInfo, String> {
     let catalog = flowclone_disk::DiskCatalog::platform_default();
     match catalog.find(path).map_err(|e| e.to_string())? {

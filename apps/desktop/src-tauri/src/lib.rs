@@ -103,6 +103,7 @@ pub fn run() {
             commands::generate_report_stub,
             commands::cancel_clone,
             commands::open_full_disk_access_settings,
+            commands::eject_disk,
             commands::pending_image_job,
             commands::discard_pending_image,
             commands::dismiss_pending_image,
