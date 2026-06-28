@@ -8,10 +8,11 @@ workspace behind it.
 
 ## Safety warning
 
-FlowClone is not ready for real write operations. Disk detection uses read-only
-macOS `diskutil` metadata by default. Restore, direct clone writes, and
-verification are still mocked. Image creation can read a source disk into a
-`.flowimg` file only when the process has macOS raw disk read permission.
+FlowClone performs no destructive writes yet. Disk detection is read-only macOS
+`diskutil` metadata; direct clone, restore, and verification are still stubbed.
+The one real operation is **Image Migration**, which reads a source disk into a
+`.flowimg` file — a read-only operation that needs elevated raw-disk access (a
+macOS admin prompt, plus Full Disk Access granted to the responsible app).
 
 ## MVP scope
 
@@ -20,7 +21,8 @@ verification are still mocked. Image creation can read a source disk into a
 - Switch between English and Thai.
 - Persist the selected language locally.
 - Switch between light and dark mode.
-- Refresh the disk list from the home screen.
+- Detect disks automatically as they are connected or removed (event-driven via
+  the native DiskArbitration watcher), with a manual refresh available.
 
 ### Direct Clone
 
@@ -34,11 +36,17 @@ verification are still mocked. Image creation can read a source disk into a
 
 ### Image Migration
 
-- Detect the one-disk state in the demo catalog.
-- Suggest creating a `.flowimg` migration image.
-- Let the user choose a save location.
-- Create a `.flowimg` image file when raw disk read access is available.
-- Keep restore support stubbed for a later SSD.
+- Detect the connected source SSD and show its real used space.
+- Choose where to save the `.flowimg` image.
+- Create a full raw image of the source disk. The privileged raw read runs
+  through a native macOS admin prompt (or the `flowclone` CLI under `sudo`); the
+  source is unmounted for the read and remounted afterward.
+- Show live progress, transfer speed, and estimated time; cancel at any time
+  (with a confirmation prompt).
+- Recover from interruptions: auto-reconnect and resume if the disk drops off
+  the bus, and flag an unfinished image on the next launch after a crash or
+  power loss.
+- Restore to a new SSD is stubbed for a later phase.
 
 ## Tech stack
 
@@ -91,11 +99,18 @@ For local raw image testing on macOS, build the CLI and run only the CLI with
 admin rights:
 
 ```bash
-rtk cargo build -p flowclone-cli
+cargo build -p flowclone-cli
 sudo ./target/debug/flowclone create-image --source /dev/disk6 --output ~/Downloads/FlowClone-test.flowimg
 ```
 
 Do not run the desktop GUI as root.
+
+Creating an image from the GUI triggers a macOS admin prompt for the raw read.
+That elevated read also needs **Full Disk Access** for the responsible app —
+grant it under System Settings → Privacy & Security → Full Disk Access. In
+development, grant it to the terminal that launches `pnpm dev` (the dev app
+inherits its access). The GUI runs the same `flowclone` CLI, so build it first
+with `cargo build -p flowclone-cli`.
 
 ## Build desktop installers
 
@@ -174,7 +189,7 @@ pnpm tauri build --bundles nsis
 Expected output:
 
 ```text
-target\release\bundle\nsis\FlowClone_0.1.0_x64-setup.exe
+target\release\bundle\nsis\FlowClone_0.0.1_x64-setup.exe
 ```
 
 If the Windows host is not x64, install the target explicitly and pass it:
@@ -189,6 +204,7 @@ distribution needs Windows code signing.
 
 ## Docs
 
+- [`CHANGELOG.md`](CHANGELOG.md)
 - [`docs/DESIGN.md`](docs/DESIGN.md)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/SAFETY.md`](docs/SAFETY.md)
