@@ -178,6 +178,8 @@ export function HomeScreen() {
             icon={<HardDrive className="h-4 w-4" />}
             label={t("directCloneMode")}
             onClick={() => setMode("clone")}
+            disabled
+            tooltip={t("comingSoon")}
           />
         </div>
         <button
@@ -349,27 +351,45 @@ function ModeButton({
   icon,
   label,
   onClick,
+  disabled,
+  tooltip,
 }: {
   active: boolean;
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  disabled?: boolean;
+  tooltip?: string;
 }) {
   return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-9 items-center justify-center gap-2 rounded-input px-4 text-sm font-medium transition",
-        active
-          ? "bg-primary text-white shadow-soft"
-          : "text-muted hover:bg-elevated hover:text-text"
+    <div className="group relative">
+      <button
+        type="button"
+        aria-pressed={active}
+        disabled={disabled}
+        title={disabled ? tooltip : undefined}
+        onClick={disabled ? undefined : onClick}
+        className={cn(
+          "inline-flex h-9 w-full items-center justify-center gap-2 rounded-input px-4 text-sm font-medium transition",
+          disabled
+            ? "cursor-not-allowed text-muted/50"
+            : active
+              ? "bg-primary text-white shadow-soft"
+              : "text-muted hover:bg-elevated hover:text-text"
+        )}
+      >
+        {icon}
+        <span>{label}</span>
+      </button>
+      {disabled && tooltip && (
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 -translate-x-1/2 whitespace-nowrap rounded-input bg-text px-2 py-1 text-xs font-medium text-background opacity-0 shadow-soft transition-opacity duration-150 group-hover:opacity-100"
+        >
+          {tooltip}
+        </span>
       )}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
+    </div>
   );
 }
 

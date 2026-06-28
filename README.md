@@ -8,11 +8,16 @@ workspace behind it.
 
 ## Safety warning
 
-FlowClone performs no destructive writes yet. Disk detection is read-only macOS
-`diskutil` metadata; direct clone, restore, and verification are still stubbed.
-The one real operation is **Image Migration**, which reads a source disk into a
-`.flowimg` file — a read-only operation that needs elevated raw-disk access (a
-macOS admin prompt, plus Full Disk Access granted to the responsible app).
+FlowClone can now create and restore raw disk images on macOS.
+
+- **Image Migration** reads a source disk into a `.flowimg` file (read-only on
+  the source).
+- **Restore Image** writes a `.flowimg` back onto a target disk — **this is
+  destructive and erases the target**.
+
+Both need elevated raw-disk access: a macOS admin prompt, plus **Full Disk
+Access** granted to the responsible app. **Direct Clone** is temporarily
+disabled in this release, and verification is still stubbed.
 
 ## MVP scope
 
@@ -24,16 +29,6 @@ macOS admin prompt, plus Full Disk Access granted to the responsible app).
 - Detect disks automatically as they are connected or removed (event-driven via
   the native DiskArbitration watcher), with a manual refresh available.
 
-### Direct Clone
-
-- Detect available macOS disks.
-- Let the user choose Source SSD and Target SSD.
-- Validate that source and target are different.
-- Validate that target capacity is greater than or equal to source capacity.
-- Show a destructive action confirmation.
-- Require the user to type `ERASE` before the clone can start.
-- Run a stub clone and emit progress events.
-
 ### Image Migration
 
 - Detect the connected source SSD and show its real used space.
@@ -44,9 +39,25 @@ macOS admin prompt, plus Full Disk Access granted to the responsible app).
 - Show live progress, transfer speed, and estimated time; cancel at any time
   (with a confirmation prompt).
 - Recover from interruptions: auto-reconnect and resume if the disk drops off
-  the bus, and flag an unfinished image on the next launch after a crash or
-  power loss.
-- Restore to a new SSD is stubbed for a later phase.
+  the bus, skip unreadable blocks (ddrescue-style) so a bad sector doesn't abort
+  the whole image, and flag an unfinished image on the next launch after a crash
+  or power loss.
+
+### Restore Image
+
+- Choose a `.flowimg` file and a target SSD.
+- Validate the image and the target (rejects boot, internal, read-only, and
+  too-small disks).
+- Require typed `ERASE` confirmation.
+- Write the raw image onto the target via a macOS admin prompt (or the
+  `flowclone` CLI with `--confirm-erase`), with live progress, speed, and ETA.
+- **Destructive — the target disk is erased and overwritten.**
+
+### Direct Clone (coming soon)
+
+Disk-to-disk cloning is temporarily disabled in this release while Image
+Migration and Restore are stabilized. The mode is visible but inactive (it shows
+a "coming soon" tooltip) and will return in a later version.
 
 ## Tech stack
 
@@ -189,7 +200,7 @@ pnpm tauri build --bundles nsis
 Expected output:
 
 ```text
-target\release\bundle\nsis\FlowClone_0.0.1_x64-setup.exe
+target\release\bundle\nsis\FlowClone_0.1.0_x64-setup.exe
 ```
 
 If the Windows host is not x64, install the target explicitly and pass it:

@@ -60,5 +60,10 @@ GEMINI.md
 .cursor/
 .github/copilot-instructions.md
 
+# Compiled TS config artifacts (emitted by `tsc -b`; the source is the .ts)
+apps/desktop/vite.config.js
+apps/desktop/vite.config.d.ts
+apps/desktop/*.tsbuildinfo
+
 # OS / misc
 Thumbs.db

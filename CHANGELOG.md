@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-28
+
+First release intended for trying real workflows: **Image Migration** and
+**Restore Image** both work end-to-end on macOS (CLI and GUI). This release
+introduces the first destructive operation (Restore), gated behind validation,
+typed `ERASE` confirmation, and an admin prompt.
+
+### Added
+
+- **Restore Image** — write a `.flowimg` back onto a target disk. The GUI runs
+  the trusted `flowclone` CLI behind a macOS admin prompt (`restore-image
+  --confirm-erase`) with live progress, speed, and ETA. Refuses boot, internal,
+  read-only, and too-small targets.
+- **Skip unreadable blocks** when imaging (ddrescue-style): retry once, then
+  zero-fill and record the bad region in `<image>.badblocks.txt` instead of
+  aborting — so a single bad sector doesn't kill the whole image.
+- **`.flowimg` document icon** — declares a document type and exported UTI so a
+  built, registered `.app` shows the FlowClone icon on `.flowimg` files.
+
+### Changed
+
+- **Direct Clone is temporarily disabled** in the UI (shown with a "coming soon"
+  tooltip) while imaging and restore are stabilized.
+- Restore tolerates `ENOTTY` from flushing the unbuffered raw device (writes are
+  already durable), so a successful restore no longer reports failure.
+
+### Fixed
+
+- `pnpm install` (run by `tauri dev`) no longer fails on pnpm 11 — esbuild's
+  build script is approved via `allowBuilds`.
+
 ## [0.0.1] - 2026-06-28
 
 Initial tracked release. FlowClone is a Tauri v2 desktop app for SSD migration on
@@ -43,5 +74,6 @@ still stubbed.
   disk as target) lives in the Rust core, not the UI.
 - Destructive actions require typed `ERASE` confirmation.
 
-[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Dhanabhon/flow-clone/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/Dhanabhon/flow-clone/releases/tag/v0.0.1
