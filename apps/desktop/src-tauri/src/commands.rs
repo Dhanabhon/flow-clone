@@ -8,6 +8,8 @@ use flowclone_disk::{DiskCatalogApi, DiskInfo};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
@@ -574,13 +576,18 @@ fn run_elevated(cli: &Path, args: &[&str], fail_prefix: &str) -> Result<(), Stri
     };
     // `exit 1223` == ERROR_CANCELLED: Start-Process throws when the user declines
     // the UAC prompt. Otherwise propagate the CLI's own exit code.
+    // `-WindowStyle Hidden` keeps the elevated CLI's freshly-created console from
+    // flashing up a terminal window (it writes progress to files, not a console).
     let script = format!(
         "$ErrorActionPreference='Stop'; \
-         try {{ $p = Start-Process -FilePath {file} -ArgumentList {arg_list} -Verb RunAs -Wait -PassThru; \
+         try {{ $p = Start-Process -FilePath {file} -ArgumentList {arg_list} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; \
          if ($null -eq $p.ExitCode) {{ exit 0 }} else {{ exit $p.ExitCode }} }} \
          catch {{ exit 1223 }}"
     );
 
+    // `CREATE_NO_WINDOW` stops this PowerShell itself from popping a console
+    // window when spawned by the GUI (which has no console of its own).
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = Command::new("powershell")
         .args([
             "-NoProfile",
@@ -590,6 +597,7 @@ fn run_elevated(cli: &Path, args: &[&str], fail_prefix: &str) -> Result<(), Stri
             "-Command",
             &script,
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|error| format!("failed to launch elevation prompt: {error}"))?;
 
