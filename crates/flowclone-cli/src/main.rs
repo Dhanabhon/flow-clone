@@ -18,7 +18,7 @@ const IMAGE_BLOCK_SIZE: usize = 4 * 1024 * 1024;
 // (incl. 4Kn disks). Keeping the block a 4096-multiple guarantees every full
 // block is sector-aligned; only the final partial block needs special handling.
 const _: () = assert!(
-    IMAGE_BLOCK_SIZE % 4096 == 0,
+    IMAGE_BLOCK_SIZE.is_multiple_of(4096),
     "IMAGE_BLOCK_SIZE must be a multiple of 4096 to keep raw disk I/O sector-aligned"
 );
 /// Reject image headers larger than this — guards against a corrupt length field.
