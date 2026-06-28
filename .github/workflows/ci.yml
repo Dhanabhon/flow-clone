@@ -15,6 +15,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Build CLI sidecar
+        # flowclone-desktop's tauri-build script resolves the externalBin
+        # `binaries/flowclone-<triple>`, which is gitignored, so the workspace
+        # cannot compile (clippy/test) until it exists.
+        run: bash scripts/build-sidecar.sh
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
