@@ -4,10 +4,13 @@
 //! Clone, image, and restore operations still live behind separate safety
 //! gates; this crate only enumerates disks.
 
+#[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "macos")]
 pub mod macos;
 pub mod model;
 pub mod watcher;
+#[cfg(target_os = "windows")]
 pub mod windows;
 
 pub use model::{Connection, DiskInfo, Health};
@@ -70,7 +73,12 @@ impl DiskCatalog {
         Self(Arc::new(macos::MacosCatalog::new()))
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    fn platform_catalog() -> Self {
+        Self(Arc::new(windows::WindowsCatalog::new()))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     fn platform_catalog() -> Self {
         Self::mock()
     }

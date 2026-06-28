@@ -25,7 +25,11 @@ pub fn platform_disk_watcher() -> Box<dyn DiskWatcher> {
     {
         Box::new(macos::MacosDiskWatcher)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(windows::WindowsDiskWatcher)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Box::new(NoopDiskWatcher)
     }
@@ -33,12 +37,48 @@ pub fn platform_disk_watcher() -> Box<dyn DiskWatcher> {
 
 /// Fallback for platforms without a native watcher yet. Callers should keep a
 /// periodic refresh as a safety net regardless of platform.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 struct NoopDiskWatcher;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl DiskWatcher for NoopDiskWatcher {
     fn start(&self, _on_change: Box<dyn Fn() + Send + 'static>) {}
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::DiskWatcher;
+    use std::time::Duration;
+
+    // Bitmask of currently-present logical drives (bit 0 = A:, bit 1 = B:, ...).
+    // A cheap single syscall, so we can poll it often without spawning anything.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLogicalDrives() -> u32;
+    }
+
+    pub struct WindowsDiskWatcher;
+
+    impl DiskWatcher for WindowsDiskWatcher {
+        fn start(&self, on_change: Box<dyn Fn() + Send + 'static>) {
+            // No `WM_DEVICECHANGE` window pump needed: polling the logical-drive
+            // mask catches USB/external drives appearing or disappearing, which
+            // is what the disk list cares about. Runs for the process lifetime.
+            std::thread::spawn(move || {
+                // SAFETY: `GetLogicalDrives` takes no arguments and only reads a
+                // process-wide bitmask; it has no failure mode we must handle.
+                let mut last = unsafe { GetLogicalDrives() };
+                loop {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let now = unsafe { GetLogicalDrives() };
+                    if now != last {
+                        last = now;
+                        on_change();
+                    }
+                }
+            });
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
