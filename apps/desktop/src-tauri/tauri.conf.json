@@ -38,6 +38,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "icons/flowimg.icns": "flowimg.icns"
+    },
     "category": "Utility",
     "shortDescription": "Open-source SSD migration assistant for macOS",
     "longDescription": "FlowClone guides SSD migration workflows with mock Direct Clone and Image Migration flows in Phase 1. It is not ready for real disk operations."

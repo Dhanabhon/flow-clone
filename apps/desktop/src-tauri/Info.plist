@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist by the Tauri macOS bundler.
+  Declares the .flowimg document type and an exported UTI so Finder shows the
+  FlowClone icon (bundled as Resources/flowimg.icns) on .flowimg files.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>FlowClone Disk Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>app.flowclone.flowimg</string>
+      </array>
+      <key>CFBundleTypeIconFile</key>
+      <string>flowimg.icns</string>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>app.flowclone.flowimg</string>
+      <key>UTTypeDescription</key>
+      <string>FlowClone Disk Image</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeIconFile</key>
+      <string>flowimg.icns</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>flowimg</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>
