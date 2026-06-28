@@ -38,7 +38,7 @@ const en = {
   createMigrationImage: "Create Image",
   restoreImageTitle: "Restore an existing image",
   restoreImageBody:
-    "Write a previously created `.flowimg` image to a target SSD. Phase 1 validates the file and target only; no disk data is written yet.",
+    "Write a previously created `.flowimg` image onto a target SSD. This erases the target disk and overwrites it with the image.",
   restoreImageStep: "Choose `.flowimg` file",
   restoreImageEmpty: "No `.flowimg` file selected yet.",
   restoreTargetStep: "Select target SSD",
@@ -78,7 +78,7 @@ const en = {
   eraseWarning:
     "All data on the target disk will be erased and cannot be recovered. Phase 1 is mocked and will not write to any disk.",
   restoreEraseWarning:
-    "All data on the target disk will be erased when real restore is enabled. Phase 1 validates only and will not write to any disk.",
+    "All data on the target disk will be erased and overwritten with the image. This cannot be undone.",
   typeErase: "Type ERASE to continue.",
   verifyAfterCloning: "Verify after cloning",
   cancel: "Cancel",
@@ -94,7 +94,7 @@ const en = {
   creatingImageHelp: "Keep the source SSD connected until this workflow finishes.",
   restoringImageTitle: "Restoring image...",
   restoringImageHelp:
-    "Validating the image and target SSD. Phase 1 does not write to disk.",
+    "Writing the image to the target disk. Keep the disk connected until this finishes.",
   diskAccessRequiredTitle: "Disk Access Required",
   diskAccessRequiredBody:
     "macOS blocked raw disk access. Open Full Disk Access, allow your dev terminal or packaged FlowClone app, then check again.",
@@ -141,13 +141,13 @@ const en = {
   copyingMockBlock: "Copying mock block {step} to {targetPath}",
   creatingImageBlock: "Creating image block {step} to {imagePath}",
   imageReadyAt: "Image workflow ready at {path}",
-  restoreWorkflowReady: "Restore workflow ready",
+  restoreWorkflowReady: "Restore complete",
   imageMigrationReady: "Image Migration Ready",
-  restoreCompleted: "Restore Ready",
+  restoreCompleted: "Restore Completed",
   cloneCompleted: "Clone Completed",
   imageCompletedBody: "A `.flowimg` image file was saved with raw source disk data. Restore support is ready for the next SSD.",
   restoreCompletedBody:
-    "The restore workflow validated the image and target SSD. Actual disk writing is still stubbed in Phase 1.",
+    "The image was written to the target disk. Your new SSD is ready to use.",
   imageVerifying: "Verifying image file...",
   imageVerified: "Image file verified: {model}, {size}.",
   imageVerifyFailed: "Image file verification failed: {message}",
@@ -199,7 +199,7 @@ const th: Record<MessageKey, string> = {
   createMigrationImage: "สร้างอิมเมจ",
   restoreImageTitle: "กู้คืนจากอิมเมจที่มีอยู่",
   restoreImageBody:
-    "เขียนไฟล์ `.flowimg` ที่สร้างไว้แล้วลง SSD ปลายทาง Phase 1 จะตรวจสอบไฟล์และดิสก์ปลายทางเท่านั้น ยังไม่เขียนข้อมูลลงดิสก์จริง",
+    "เขียนไฟล์ `.flowimg` ที่สร้างไว้แล้วลง SSD ปลายทาง — จะลบข้อมูลในดิสก์ปลายทางทั้งหมดแล้วเขียนอิมเมจทับ",
   restoreImageStep: "เลือกไฟล์ `.flowimg`",
   restoreImageEmpty: "ยังไม่ได้เลือกไฟล์ `.flowimg`",
   restoreTargetStep: "เลือก SSD ปลายทาง",
@@ -239,7 +239,7 @@ const th: Record<MessageKey, string> = {
   eraseWarning:
     "ข้อมูลทั้งหมดบนดิสก์ปลายทางจะถูกลบและไม่สามารถกู้คืนได้ Phase 1 ยังเป็น mock และจะไม่เขียนข้อมูลลงดิสก์จริง",
   restoreEraseWarning:
-    "เมื่อเปิดใช้การกู้คืนจริง ข้อมูลทั้งหมดบนดิสก์ปลายทางจะถูกลบ Phase 1 จะตรวจสอบเท่านั้นและยังไม่เขียนข้อมูลลงดิสก์จริง",
+    "ข้อมูลทั้งหมดบนดิสก์ปลายทางจะถูกลบและเขียนทับด้วยอิมเมจ ไม่สามารถย้อนกลับได้",
   typeErase: "พิมพ์ ERASE เพื่อดำเนินการต่อ",
   verifyAfterCloning: "ตรวจสอบหลัง clone เสร็จ",
   cancel: "ยกเลิก",
@@ -255,7 +255,7 @@ const th: Record<MessageKey, string> = {
   creatingImageHelp: "เชื่อมต่อ SSD ต้นทางไว้จนกว่า workflow นี้จะเสร็จ",
   restoringImageTitle: "กำลังกู้คืนอิมเมจ...",
   restoringImageHelp:
-    "กำลังตรวจสอบอิมเมจและ SSD ปลายทาง Phase 1 ยังไม่เขียนข้อมูลลงดิสก์",
+    "กำลังเขียนอิมเมจลงดิสก์ปลายทาง อย่าถอดดิสก์จนกว่าจะเสร็จ",
   diskAccessRequiredTitle: "ต้องเปิดสิทธิ์เข้าถึงดิสก์",
   diskAccessRequiredBody:
     "macOS บล็อกการอ่านดิสก์แบบ raw ให้เปิด Full Disk Access แล้วอนุญาต Terminal ที่ใช้ dev หรือแอป FlowClone ที่ package แล้ว จากนั้นกดตรวจสอบอีกครั้ง",
@@ -301,13 +301,13 @@ const th: Record<MessageKey, string> = {
   copyingMockBlock: "กำลังคัดลอก mock block {step} ไปยัง {targetPath}",
   creatingImageBlock: "กำลังสร้าง image block {step} ไปยัง {imagePath}",
   imageReadyAt: "workflow อิมเมจพร้อมแล้วที่ {path}",
-  restoreWorkflowReady: "workflow กู้คืนพร้อมแล้ว",
+  restoreWorkflowReady: "กู้คืนเสร็จแล้ว",
   imageMigrationReady: "อิมเมจสำหรับย้ายข้อมูลพร้อมแล้ว",
-  restoreCompleted: "พร้อมกู้คืนอิมเมจแล้ว",
+  restoreCompleted: "กู้คืนอิมเมจเสร็จแล้ว",
   cloneCompleted: "Clone เสร็จแล้ว",
   imageCompletedBody: "บันทึกไฟล์อิมเมจ `.flowimg` พร้อมข้อมูลดิบจากดิสก์ต้นทางแล้ว พร้อมสำหรับกู้คืนลง SSD ลูกถัดไป",
   restoreCompletedBody:
-    "ตรวจสอบไฟล์อิมเมจและ SSD ปลายทางแล้ว การเขียนข้อมูลจริงยังเป็น stub ใน Phase 1",
+    "เขียนอิมเมจลงดิสก์ปลายทางเรียบร้อยแล้ว SSD ลูกใหม่พร้อมใช้งาน",
   imageVerifying: "กำลังตรวจสอบไฟล์อิมเมจ...",
   imageVerified: "ตรวจสอบไฟล์อิมเมจแล้ว: {model}, {size}",
   imageVerifyFailed: "ตรวจสอบไฟล์อิมเมจไม่สำเร็จ: {message}",
