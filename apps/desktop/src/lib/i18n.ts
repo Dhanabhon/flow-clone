@@ -125,6 +125,7 @@ const en = {
   waitingForAuthorization:
     "Waiting for administrator authorization — approve the macOS password prompt to start.",
   reconnectingToDisk: "Interrupted — reconnecting to the disk…",
+  restoringToDisk: "Writing the image to the disk…",
   migrationInterruptedTitle: "Migration interrupted",
   migrationInterruptedBody:
     "The disk disconnected before the image was finished.",
@@ -283,6 +284,7 @@ const th: Record<MessageKey, string> = {
   waitingForAuthorization:
     "กำลังรอการอนุญาตจากผู้ดูแลระบบ — ยืนยันรหัสผ่านในหน้าต่าง macOS เพื่อเริ่ม",
   reconnectingToDisk: "ถูกขัดจังหวะ — กำลังเชื่อมต่อดิสก์อีกครั้ง…",
+  restoringToDisk: "กำลังเขียนอิมเมจลงดิสก์…",
   migrationInterruptedTitle: "การย้ายข้อมูลถูกขัดจังหวะ",
   migrationInterruptedBody: "ดิสก์หลุดการเชื่อมต่อก่อนที่จะสร้างอิมเมจเสร็จ",
   migrationInterruptedHelp:

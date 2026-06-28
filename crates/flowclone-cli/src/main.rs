@@ -284,6 +284,11 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
         .open(raw_target)
         .map_err(|error| anyhow::anyhow!("open target {raw_target} for write: {error}"))?;
 
+    // Restore writes to a device, so there's no growing file to poll. Publish a
+    // small progress file the GUI reads instead. Clear any stale one first.
+    let progress_path = restore_progress_path(image_path);
+    let _ = std::fs::remove_file(&progress_path);
+
     let start = Instant::now();
     let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
     let mut bytes_done = 0u64;
@@ -316,9 +321,14 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
                     start.elapsed().as_secs_f64()
                 )
             );
+            let _ = std::fs::write(
+                &progress_path,
+                format!("{bytes_done} {}", info.payload_bytes),
+            );
             last_print = Instant::now();
         }
     }
+    let _ = std::fs::remove_file(&progress_path);
 
     // Raw character devices (/dev/rdiskN) are unbuffered, so writes are already
     // durable and fsync isn't supported — it returns ENOTTY (errno 25). Tolerate
@@ -543,6 +553,11 @@ fn partial_image_path(image_path: &str) -> String {
 /// Sentinel file the GUI drops to ask this (possibly elevated) process to abort.
 fn cancel_sentinel_path(image_path: &str) -> String {
     format!("{image_path}.cancel")
+}
+
+/// File the elevated restore writes "<bytes_done> <total>" to, for the GUI to poll.
+fn restore_progress_path(image_path: &str) -> String {
+    format!("{image_path}.restore-progress")
 }
 
 /// Whether the accumulated unreadable regions mean the drive is too damaged to

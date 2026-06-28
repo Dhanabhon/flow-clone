@@ -46,17 +46,8 @@ export function Routes() {
 
 function ConfirmationScreen() {
   const { t } = useI18n();
-  const {
-    mode,
-    source,
-    target,
-    imagePath,
-    verify,
-    setVerify,
-    beginClone,
-    setProgress,
-    goTo,
-  } = useFlowStore();
+  const { mode, source, target, imagePath, verify, setVerify, beginClone, goTo } =
+    useFlowStore();
   const [typed, setTyped] = useState("");
   const [error, setError] = useState<string | null>(null);
   const isRestoreMode = mode === "restore";
@@ -71,8 +62,6 @@ function ConfirmationScreen() {
         if (!imagePath) return;
         const jobId = await restoreImageStub(imagePath, target.device_path);
         beginClone(jobId, "restore");
-        setProgress(completedRestoreProgress(jobId, target.total_bytes));
-        goTo("completed");
         return;
       }
 
@@ -190,7 +179,10 @@ function CloningScreen() {
     );
   const pct = Math.round(shown.fraction * 100);
   const imageName = fileNameFromPath(imagePath, "migration.flowimg");
-  const canCancel = isImageMode && shown.phase !== "completed" && shown.phase !== "failed";
+  const canCancel =
+    (isImageMode || isRestoreMode) &&
+    shown.phase !== "completed" &&
+    shown.phase !== "failed";
   const failed = shown.phase === "failed";
   const insufficientSpace = failed
     ? parseInsufficientSpace(shown.current_operation)
@@ -661,6 +653,7 @@ function progressOperationText(
     return t("waitingForAuthorization");
   if (text === "Interrupted; reconnecting to disk")
     return t("reconnectingToDisk");
+  if (text === "Restoring to disk") return t("restoringToDisk");
   if (text === "Completed") return t("cloneCompleted");
   if (text === "Restore workflow ready") return t("restoreWorkflowReady");
   if (text === "Mock migration image created") return t("mockImageCreated");
@@ -703,21 +696,6 @@ function emptyProgress(bytesTotal: number, mode: WorkflowMode): Progress {
         : mode === "restore"
           ? "Preparing restore"
           : "Preparing clone",
-  };
-}
-
-function completedRestoreProgress(jobId: string, targetBytes: number): Progress {
-  return {
-    job_id: jobId,
-    phase: "completed",
-    fraction: 1,
-    bytes_done: targetBytes,
-    bytes_total: targetBytes,
-    read_speed: 0,
-    write_speed: 0,
-    elapsed_secs: 0,
-    eta_secs: 0,
-    current_operation: "Restore workflow ready",
   };
 }
 

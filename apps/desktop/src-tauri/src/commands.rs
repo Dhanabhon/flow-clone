@@ -408,7 +408,17 @@ fn spawn_elevated_image_copy(
     let run_image_path = image_path.clone();
     tauri::async_runtime::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
-            run_elevated_create_image(&cli, &device_path, &run_image_path)
+            run_elevated(
+                &cli,
+                &[
+                    "create-image",
+                    "--source",
+                    &device_path,
+                    "--output",
+                    &run_image_path,
+                ],
+                "elevated image creation failed",
+            )
         })
         .await;
         run_cancel.store(true, Ordering::SeqCst);
@@ -480,17 +490,13 @@ fn resolve_cli_binary() -> Result<PathBuf, String> {
 }
 
 /// Run `flowclone create-image` as root via a native macOS admin prompt.
-fn run_elevated_create_image(
-    cli: &Path,
-    device_path: &str,
-    image_path: &str,
-) -> Result<(), String> {
-    let shell_command = format!(
-        "{} create-image --source {} --output {}",
-        posix_quote(&cli.to_string_lossy()),
-        posix_quote(device_path),
-        posix_quote(image_path),
-    );
+/// Run the bundled CLI as root via a native macOS admin prompt.
+fn run_elevated(cli: &Path, args: &[&str], fail_prefix: &str) -> Result<(), String> {
+    let mut shell_command = posix_quote(&cli.to_string_lossy());
+    for arg in args {
+        shell_command.push(' ');
+        shell_command.push_str(&posix_quote(arg));
+    }
     let apple_script = format!(
         "do shell script {} with administrator privileges",
         applescript_quote(&shell_command)
@@ -510,7 +516,7 @@ fn run_elevated_create_image(
     if stderr.contains("-128") || stderr.contains("User canceled") {
         return Err("Admin authorization was cancelled.".into());
     }
-    Err(format!("elevated image creation failed: {}", stderr.trim()))
+    Err(format!("{fail_prefix}: {}", stderr.trim()))
 }
 
 /// Single-quote a value for safe use as one `/bin/sh` argument.
@@ -850,12 +856,226 @@ pub async fn validate_image_stub(image_path: String) -> Result<ImageValidation, 
     validate_image_file(&image_path).await
 }
 
-/// Restore a mocked migration image. No disk is written in Phase 1.
+/// Restore a `.flowimg` onto a target disk via the elevated CLI. **Destructive.**
 #[tauri::command]
-pub async fn restore_image_stub(image_path: String, target_path: String) -> Result<String, String> {
-    validate_image_file(&image_path).await?;
-    ensure_disk_exists(&target_path)?;
-    Ok(stub_id("restore"))
+pub async fn restore_image_stub(
+    app: AppHandle,
+    image_cancel: State<'_, ImageCancelState>,
+    image_path: String,
+    target_path: String,
+) -> Result<String, String> {
+    let image_path = image_path.trim().to_string();
+    let validation = validate_image_file(&image_path).await?;
+    if validation.payload_bytes == 0 {
+        return Err("this image has no raw payload to restore".into());
+    }
+    let target = find_disk(&target_path)?;
+    // Defense in depth — the CLI re-validates, but reject obvious mistakes here.
+    if target.is_boot {
+        return Err(format!(
+            "refusing to restore onto the boot disk {}",
+            target.device_path
+        ));
+    }
+    if target.read_only {
+        return Err(format!("target {} is read-only", target.device_path));
+    }
+    if matches!(target.connection, flowclone_disk::Connection::Internal) {
+        return Err(format!(
+            "refusing to restore onto internal disk {} (external targets only)",
+            target.device_path
+        ));
+    }
+    if target.total_bytes < validation.payload_bytes {
+        return Err(format!(
+            "target {} is too small for this image",
+            target.device_path
+        ));
+    }
+
+    let image_cancel = image_cancel.inner().clone();
+    spawn_elevated_restore(
+        app,
+        image_cancel,
+        image_path,
+        target.device_path,
+        validation.payload_bytes,
+    )
+}
+
+/// Path the CLI writes restore progress to; mirrors `flowclone-cli`.
+fn restore_progress_path(image_path: &str) -> String {
+    format!("{image_path}.restore-progress")
+}
+
+/// Read "<bytes_done> <total>" the elevated restore publishes.
+fn read_restore_progress(path: &str) -> Option<(u64, u64)> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let mut parts = contents.split_whitespace();
+    let done = parts.next()?.parse::<u64>().ok()?;
+    let total = parts.next()?.parse::<u64>().ok()?;
+    Some((done, total))
+}
+
+/// Run the elevated CLI restore, polling its progress file for the UI.
+fn spawn_elevated_restore(
+    app: AppHandle,
+    image_cancel: ImageCancelState,
+    image_path: String,
+    target_device: String,
+    total: u64,
+) -> Result<String, String> {
+    let cli = resolve_cli_binary()?;
+    let job_id = stub_id("restore");
+    let cancel = Arc::new(AtomicBool::new(false));
+    set_image_cancel(
+        &image_cancel,
+        job_id.clone(),
+        cancel.clone(),
+        Some(image_path.clone()),
+    )?;
+
+    let progress_path = restore_progress_path(&image_path);
+    let cleanup_job_id = job_id.clone();
+    let cleanup_cancel = image_cancel.clone();
+
+    // Poller: read the CLI's progress file (no growing target file to stat).
+    let poll_app = app.clone();
+    let poll_job_id = job_id.clone();
+    let poll_cancel = cancel.clone();
+    let poll_progress_path = progress_path.clone();
+    tauri::async_runtime::spawn(async move {
+        let start = Instant::now();
+        let mut last_bytes = 0u64;
+        let mut last_tick = Instant::now();
+        let mut speed = 0u64;
+        let mut last_growth_bytes = 0u64;
+        let mut last_growth_at = Instant::now();
+        loop {
+            if poll_cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            let elapsed = start.elapsed().as_secs_f64();
+            let progress = match read_restore_progress(&poll_progress_path) {
+                Some((bytes_done, file_total)) => {
+                    let total = if file_total > 0 { file_total } else { total };
+                    if bytes_done > last_growth_bytes {
+                        last_growth_bytes = bytes_done;
+                        last_growth_at = Instant::now();
+                    }
+                    let interval = last_tick.elapsed().as_secs_f64();
+                    if interval >= 0.8 {
+                        speed = (bytes_done.saturating_sub(last_bytes) as f64 / interval) as u64;
+                        last_bytes = bytes_done;
+                        last_tick = Instant::now();
+                    }
+                    let fraction = if total == 0 {
+                        0.0
+                    } else {
+                        (bytes_done as f64 / total as f64).clamp(0.0, 1.0)
+                    };
+                    let stalled = bytes_done > 0
+                        && bytes_done < total
+                        && last_growth_at.elapsed().as_secs_f64() >= ELEVATED_STALL_SECS;
+                    let eta_secs = if !stalled && speed > 0 && bytes_done < total {
+                        Some(((total - bytes_done) as f64 / speed as f64).max(0.0))
+                    } else {
+                        None
+                    };
+                    Progress {
+                        job_id: poll_job_id.clone(),
+                        phase: Phase::Cloning,
+                        fraction,
+                        bytes_done,
+                        bytes_total: total,
+                        read_speed: if stalled { 0 } else { speed },
+                        write_speed: if stalled { 0 } else { speed },
+                        elapsed_secs: elapsed,
+                        eta_secs,
+                        current_operation: if stalled {
+                            "Interrupted; reconnecting to disk".to_string()
+                        } else {
+                            "Restoring to disk".to_string()
+                        },
+                    }
+                }
+                None => Progress {
+                    job_id: poll_job_id.clone(),
+                    phase: Phase::Cloning,
+                    fraction: 0.0,
+                    bytes_done: 0,
+                    bytes_total: total,
+                    read_speed: 0,
+                    write_speed: 0,
+                    elapsed_secs: elapsed,
+                    eta_secs: None,
+                    current_operation: "Waiting for administrator authorization".to_string(),
+                },
+            };
+            let _ = poll_app.emit("clone://progress", progress);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
+
+    // Runner: launch the elevated CLI restore and report the terminal state.
+    let run_app = app.clone();
+    let run_job_id = job_id.clone();
+    let run_cancel = cancel.clone();
+    let run_image_path = image_path.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            run_elevated(
+                &cli,
+                &[
+                    "restore-image",
+                    "--image",
+                    &run_image_path,
+                    "--target",
+                    &target_device,
+                    "--confirm-erase",
+                ],
+                "elevated restore failed",
+            )
+        })
+        .await;
+        run_cancel.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_file(&progress_path);
+
+        match result {
+            Ok(Ok(())) => {
+                let _ = run_app.emit(
+                    "clone://progress",
+                    Progress {
+                        job_id: run_job_id,
+                        phase: Phase::Completed,
+                        fraction: 1.0,
+                        bytes_done: total,
+                        bytes_total: total,
+                        read_speed: 0,
+                        write_speed: 0,
+                        elapsed_secs: 0.0,
+                        eta_secs: Some(0.0),
+                        current_operation: "Restore workflow ready".to_string(),
+                    },
+                );
+            }
+            Ok(Err(error)) => {
+                let _ = run_app.emit(
+                    "clone://progress",
+                    failed_progress(run_job_id, total, error),
+                );
+            }
+            Err(error) => {
+                let _ = run_app.emit(
+                    "clone://progress",
+                    failed_progress(run_job_id, total, error.to_string()),
+                );
+            }
+        }
+        clear_image_cancel(&cleanup_cancel, &cleanup_job_id);
+    });
+
+    Ok(job_id)
 }
 
 /// Generate a report preview for the completed mock workflow.
@@ -921,10 +1141,6 @@ pub async fn open_full_disk_access_settings() -> Result<(), String> {
     {
         Err("Full Disk Access settings are only available on macOS.".into())
     }
-}
-
-fn ensure_disk_exists(path: &str) -> Result<(), String> {
-    find_disk(path).map(|_| ())
 }
 
 fn find_disk(path: &str) -> Result<DiskInfo, String> {
