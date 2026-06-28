@@ -250,6 +250,7 @@ distribution needs Windows code signing.
 
 ## Docs
 
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — how to install and use FlowClone
 - [`CHANGELOG.md`](CHANGELOG.md)
 - [`docs/DESIGN.md`](docs/DESIGN.md)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
