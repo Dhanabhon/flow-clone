@@ -475,18 +475,39 @@ fn resolve_cli_binary() -> Result<PathBuf, String> {
             return Ok(path);
         }
     }
-    // Production: bundled alongside the app executable (Tauri sidecar). Dev:
-    // `target/<profile>/flowclone` sits next to the app binary too.
+    // The CLI sits next to the app executable: a Tauri sidecar in a bundled app
+    // (Contents/MacOS/flowclone), or `target/<profile>/flowclone` in dev.
     if let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
     {
-        let candidate = dir.join("flowclone");
-        if candidate.exists() {
-            return Ok(candidate);
+        let exact = dir.join("flowclone");
+        if exact.exists() {
+            return Ok(exact);
+        }
+        // The sidecar may keep its target-triple suffix (e.g.
+        // flowclone-aarch64-apple-darwin); match that without picking the app
+        // binary (flowclone-desktop).
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if is_cli_binary_name(&entry.file_name().to_string_lossy()) {
+                    return Ok(entry.path());
+                }
+            }
         }
     }
-    Err("FlowClone CLI binary not found. Build it with `cargo build -p flowclone-cli`, or set FLOWCLONE_CLI to its path.".into())
+    Err("FlowClone CLI not found. Build it with `cargo build -p flowclone-cli` (dev) or `scripts/build-sidecar.sh` (release), or set FLOWCLONE_CLI.".into())
+}
+
+/// Whether a filename is the `flowclone` CLI or a triple-suffixed sidecar of it,
+/// excluding the app binary (`flowclone-desktop`).
+fn is_cli_binary_name(name: &str) -> bool {
+    let name = name.strip_suffix(".exe").unwrap_or(name);
+    name == "flowclone"
+        || (name.starts_with("flowclone-")
+            && (name.contains("-apple-darwin")
+                || name.contains("-pc-windows-")
+                || name.contains("-unknown-linux-")))
 }
 
 /// Run `flowclone create-image` as root via a native macOS admin prompt.
@@ -1419,6 +1440,19 @@ mod tests {
 
         std::fs::remove_file(source_path).expect("remove source file");
         std::fs::remove_file(partial_path).expect("remove partial image file");
+    }
+
+    #[test]
+    fn is_cli_binary_name_matches_cli_and_sidecars_not_the_app() {
+        assert!(is_cli_binary_name("flowclone"));
+        assert!(is_cli_binary_name("flowclone.exe"));
+        assert!(is_cli_binary_name("flowclone-aarch64-apple-darwin"));
+        assert!(is_cli_binary_name("flowclone-universal-apple-darwin"));
+        assert!(is_cli_binary_name("flowclone-x86_64-pc-windows-msvc.exe"));
+        // The app binary and unrelated names must not match.
+        assert!(!is_cli_binary_name("flowclone-desktop"));
+        assert!(!is_cli_binary_name("FlowClone"));
+        assert!(!is_cli_binary_name("flowclonex"));
     }
 
     #[test]

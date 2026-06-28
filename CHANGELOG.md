@@ -25,6 +25,10 @@ typed `ERASE` confirmation, and an admin prompt.
   aborting — so a single bad sector doesn't kill the whole image.
 - **`.flowimg` document icon** — declares a document type and exported UTI so a
   built, registered `.app` shows the FlowClone icon on `.flowimg` files.
+- **Bundled CLI sidecar** — the built `.app` ships the `flowclone` CLI (via
+  `bundle.externalBin`), so Image Migration and Restore work in a distributed
+  app. Build it with `scripts/build-sidecar.sh` (or `pnpm sidecar`) before
+  `tauri build`.
 
 ### Changed
 

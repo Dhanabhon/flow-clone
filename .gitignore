@@ -67,3 +67,6 @@ apps/desktop/*.tsbuildinfo
 
 # OS / misc
 Thumbs.db
+
+# Tauri sidecar binaries (built by scripts/build-sidecar.sh)
+apps/desktop/src-tauri/binaries/
