@@ -77,8 +77,14 @@ export function HomeScreen() {
   async function eject(disk: DiskInfo) {
     try {
       await ejectDisk(disk.device_path);
-      // The disk list refreshes automatically via the native watcher when the
-      // device disappears.
+      // Clear any selection pointing at the now-removed disk and refresh the
+      // list right away. The native watcher also fires, but its broadcast can
+      // drop events for a slow subscriber, and a selected card is rendered from
+      // stored state — so without this the card would linger after a successful
+      // eject and look like nothing happened.
+      if (source?.device_path === disk.device_path) setSource(null);
+      if (target?.device_path === disk.device_path) setTarget(null);
+      await refetch();
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       await message(t("ejectFailedBody", { name: disk.model, message: detail }), {

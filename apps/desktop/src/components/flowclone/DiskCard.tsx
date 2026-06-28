@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { ArrowUpFromLine, HardDrive } from "lucide-react";
+import { HardDrive, Unplug } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
@@ -113,7 +113,7 @@ export function DiskCard({
           aria-label={t("eject")}
           className="absolute right-3 top-3 z-10 grid h-8 w-8 place-items-center rounded-button border border-border bg-surface text-muted shadow-soft transition hover:bg-elevated hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
-          <ArrowUpFromLine className="h-4 w-4" strokeWidth={2} />
+          <Unplug className="h-4 w-4" strokeWidth={2} />
         </button>
       )}
     </div>

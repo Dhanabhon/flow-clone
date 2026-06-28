@@ -40,8 +40,8 @@ Two workflows are available today:
 - **Mode buttons:** Image Migration · Restore Image · Direct Clone (disabled,
   shows "Coming soon").
 - **Disk list:** updates automatically as you plug in or remove drives.
-- **Eject (↥):** on external disk cards — safely powers down the drive so you
-  can unplug it.
+- **Eject:** the unplug icon on external disk cards — safely powers down the
+  drive so you can unplug it.
 - Top-right: **light/dark** theme and **English/ไทย** language toggles.
 
 ---
@@ -86,8 +86,8 @@ Notes:
 
 ## 5. Eject a disk
 
-Click the **eject (↥)** button on an external disk card to safely power it down
-before unplugging. On macOS this runs `diskutil eject`; on Windows it uses the
+Click the **eject** (unplug) button on an external disk card to safely power it
+down before unplugging. On macOS this runs `diskutil eject`; on Windows it uses the
 "Safely Remove" eject action. The disk disappears from the list when it's safe
 to remove.
 
