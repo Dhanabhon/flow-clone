@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use flowclone_disk::{Connection, DiskCatalogApi, DiskInfo, Health};
-use serde::Serialize;
-use std::fs::File;
+use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,11 @@ const FLOW_IMAGE_FORMAT: &str = "flowclone-image";
 const FLOW_IMAGE_MAGIC: &[u8] = b"FLOWCLONE_FLOWIMG_V1\n";
 const FLOW_IMAGE_VERSION: u64 = 1;
 const IMAGE_BLOCK_SIZE: usize = 4 * 1024 * 1024;
+/// Reject image headers larger than this — guards against a corrupt length field.
+const MAX_IMAGE_HEADER_BYTES: u64 = 1024 * 1024;
+/// macOS errno for "Inappropriate ioctl for device" — fsync on an unbuffered
+/// raw device returns this, and it's safe to ignore.
+const ENOTTY: i32 = 25;
 /// Wait between attempts to re-acquire a disk that dropped off the bus.
 const READ_RECOVERY_WAIT: Duration = Duration::from_secs(3);
 /// Attempts to re-find the disk after one drop before giving up on it.
@@ -30,6 +35,7 @@ fn main() -> Result<()> {
     match cmd.as_str() {
         "list-disks" | "ls" => list_disks(),
         "create-image" => create_image(),
+        "restore-image" => restore_image(),
         "version" | "--version" | "-v" => {
             println!("flowclone {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -37,9 +43,10 @@ fn main() -> Result<()> {
         _ => {
             eprintln!("flowclone\n");
             eprintln!("Commands:");
-            eprintln!("  list-disks    List detected disks");
-            eprintln!("  create-image  Create a .flowimg from a source disk");
-            eprintln!("  version       Print version");
+            eprintln!("  list-disks     List detected disks");
+            eprintln!("  create-image   Create a .flowimg from a source disk");
+            eprintln!("  restore-image  Write a .flowimg onto a target disk (ERASES it)");
+            eprintln!("  version        Print version");
             Ok(())
         }
     }
@@ -120,6 +127,214 @@ fn remount_disk(device_path: &str) {
     let _ = std::process::Command::new("diskutil")
         .args(["mountDisk", device_path])
         .status();
+}
+
+/// Image header fields needed to restore (parsed from a `.flowimg`).
+struct ImageInfo {
+    payload_bytes: u64,
+    data_offset: u64,
+    source: DiskInfo,
+}
+
+#[derive(Deserialize)]
+struct FlowImageHeaderOwned {
+    format: String,
+    version: u64,
+    source: DiskInfo,
+    payload_bytes: u64,
+}
+
+/// Restore a `.flowimg` onto a target disk. **Destructive** — overwrites it.
+///
+/// Requires `--confirm-erase`; without it the command prints the plan and
+/// refuses, so a stray CLI invocation can't erase a disk by accident.
+fn restore_image() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let image_path = arg_value(&args, "--image")?;
+    let target_path = arg_value(&args, "--target")?;
+    let confirmed = args.iter().any(|arg| arg == "--confirm-erase");
+
+    let info = read_flow_image_header(image_path)?;
+    let catalog = flowclone_disk::DiskCatalog::platform_default();
+    let target = catalog
+        .find(target_path)?
+        .ok_or_else(|| anyhow::anyhow!("target disk not found: {target_path}"))?;
+    validate_restore_target(&target, info.payload_bytes)?;
+    let raw_target = raw_device_path(&target.device_path);
+
+    eprintln!("image:   {image_path}");
+    eprintln!(
+        "source:  {} ({})",
+        info.source.model,
+        humansize(info.payload_bytes)
+    );
+    eprintln!(
+        "target:  {} -> {} ({})",
+        target.device_path,
+        raw_target,
+        humansize(target.total_bytes)
+    );
+
+    if !confirmed {
+        anyhow::bail!(
+            "this ERASES {} and overwrites it with the image. Re-run with --confirm-erase to proceed.",
+            target.device_path
+        );
+    }
+
+    // Clear any stale cancel sentinel so it doesn't abort this run immediately.
+    let _ = std::fs::remove_file(cancel_sentinel_path(image_path));
+    eprintln!(
+        "WARNING: erasing {} and writing {} ...",
+        target.device_path,
+        humansize(info.payload_bytes)
+    );
+    unmount_disk(&target.device_path)?;
+    let result = write_image_to_target(image_path, &raw_target, &info);
+    remount_disk(&target.device_path);
+    result?;
+    Ok(())
+}
+
+/// Reject targets that would be unsafe or impossible to restore onto.
+fn validate_restore_target(target: &DiskInfo, payload_bytes: u64) -> Result<()> {
+    if target.is_boot {
+        anyhow::bail!(
+            "refusing to restore onto the boot disk {}",
+            target.device_path
+        );
+    }
+    if target.read_only {
+        anyhow::bail!("target {} is read-only", target.device_path);
+    }
+    if matches!(target.connection, Connection::Internal) {
+        anyhow::bail!(
+            "refusing to restore onto internal disk {} (Phase 1 allows external targets only)",
+            target.device_path
+        );
+    }
+    if target.total_bytes < payload_bytes {
+        anyhow::bail!(
+            "target too small: {} has {} but the image needs {}",
+            target.device_path,
+            humansize(target.total_bytes),
+            humansize(payload_bytes)
+        );
+    }
+    Ok(())
+}
+
+/// Read + validate a `.flowimg` header, returning where the payload starts.
+fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
+    let mut file = File::open(image_path)
+        .map_err(|error| anyhow::anyhow!("open image {image_path}: {error}"))?;
+    let file_len = file.metadata()?.len();
+
+    let mut magic = vec![0u8; FLOW_IMAGE_MAGIC.len()];
+    file.read_exact(&mut magic)
+        .map_err(|error| anyhow::anyhow!("read image header: {error}"))?;
+    if magic != FLOW_IMAGE_MAGIC {
+        anyhow::bail!("{image_path} is not a FlowClone image (bad magic)");
+    }
+
+    let mut len_bytes = [0u8; 8];
+    file.read_exact(&mut len_bytes)?;
+    let header_len = u64::from_le_bytes(len_bytes);
+    if header_len == 0 || header_len > MAX_IMAGE_HEADER_BYTES {
+        anyhow::bail!("invalid image header length: {header_len}");
+    }
+
+    let mut header = vec![0u8; header_len as usize];
+    file.read_exact(&mut header)?;
+    let parsed: FlowImageHeaderOwned = serde_json::from_slice(&header)
+        .map_err(|error| anyhow::anyhow!("invalid image header: {error}"))?;
+    if parsed.format != FLOW_IMAGE_FORMAT {
+        anyhow::bail!("unsupported image format: {}", parsed.format);
+    }
+    if parsed.version != FLOW_IMAGE_VERSION {
+        anyhow::bail!("unsupported image version: {}", parsed.version);
+    }
+    if parsed.payload_bytes == 0 || parsed.payload_bytes != parsed.source.total_bytes {
+        anyhow::bail!("invalid image payload size");
+    }
+
+    let data_offset = FLOW_IMAGE_MAGIC.len() as u64 + 8 + header_len;
+    let expected = data_offset + parsed.payload_bytes;
+    if file_len != expected {
+        anyhow::bail!("image size mismatch: expected {expected} bytes, found {file_len}");
+    }
+
+    Ok(ImageInfo {
+        payload_bytes: parsed.payload_bytes,
+        data_offset,
+        source: parsed.source,
+    })
+}
+
+/// Copy the image payload onto the target raw device, block by block.
+fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -> Result<()> {
+    let cancel_path = cancel_sentinel_path(image_path);
+    let mut image = File::open(image_path)
+        .map_err(|error| anyhow::anyhow!("open image {image_path}: {error}"))?;
+    image
+        .seek(SeekFrom::Start(info.data_offset))
+        .map_err(|error| anyhow::anyhow!("seek to image payload: {error}"))?;
+    let mut target = OpenOptions::new()
+        .write(true)
+        .open(raw_target)
+        .map_err(|error| anyhow::anyhow!("open target {raw_target} for write: {error}"))?;
+
+    let start = Instant::now();
+    let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
+    let mut bytes_done = 0u64;
+    let mut last_print = Instant::now();
+
+    while bytes_done < info.payload_bytes {
+        if std::path::Path::new(&cancel_path).exists() {
+            let _ = std::fs::remove_file(&cancel_path);
+            anyhow::bail!("cancelled by user");
+        }
+        let remaining = (info.payload_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
+        image.read_exact(&mut buf[..remaining]).map_err(|error| {
+            anyhow::anyhow!("read image at payload offset {bytes_done}: {error}")
+        })?;
+        target.write_all(&buf[..remaining]).map_err(|error| {
+            anyhow::anyhow!(
+                "write target {raw_target} at offset {} ({}): {error}",
+                bytes_done,
+                humansize(bytes_done)
+            )
+        })?;
+        bytes_done += remaining as u64;
+
+        if last_print.elapsed().as_secs() >= 1 || bytes_done == info.payload_bytes {
+            eprintln!(
+                "{}",
+                progress_line(
+                    bytes_done,
+                    info.payload_bytes,
+                    start.elapsed().as_secs_f64()
+                )
+            );
+            last_print = Instant::now();
+        }
+    }
+
+    // Raw character devices (/dev/rdiskN) are unbuffered, so writes are already
+    // durable and fsync isn't supported — it returns ENOTTY (errno 25). Tolerate
+    // that; surface any other flush error.
+    if let Err(error) = target.sync_all() {
+        if error.raw_os_error() != Some(ENOTTY) {
+            return Err(anyhow::anyhow!("flush target {raw_target}: {error}"));
+        }
+    }
+    eprintln!(
+        "done in {}, wrote {} to {}",
+        format_duration(start.elapsed().as_secs()),
+        humansize(bytes_done),
+        raw_target
+    );
+    Ok(())
 }
 
 /// Re-acquire the source after it dropped off the bus, ready to resume at `offset`.
@@ -577,6 +792,94 @@ mod tests {
         assert!(!too_damaged(MAX_BAD_REGION_BYTES, MAX_BAD_REGIONS));
         assert!(too_damaged(MAX_BAD_REGION_BYTES + 1, 1));
         assert!(too_damaged(0, MAX_BAD_REGIONS + 1));
+    }
+
+    fn external_target(total_bytes: u64) -> DiskInfo {
+        let mut target = DiskInfo::placeholder("/dev/disk9");
+        target.connection = Connection::Usb;
+        target.total_bytes = total_bytes;
+        target
+    }
+
+    #[test]
+    fn validate_restore_target_rejects_unsafe_targets() {
+        let mut boot = external_target(500);
+        boot.is_boot = true;
+        assert!(validate_restore_target(&boot, 100).is_err());
+
+        let mut read_only = external_target(500);
+        read_only.read_only = true;
+        assert!(validate_restore_target(&read_only, 100).is_err());
+
+        let mut internal = external_target(500);
+        internal.connection = Connection::Internal;
+        assert!(validate_restore_target(&internal, 100).is_err());
+
+        // Too small.
+        assert!(validate_restore_target(&external_target(50), 100).is_err());
+
+        // Good: external, writable, big enough.
+        assert!(validate_restore_target(&external_target(500), 100).is_ok());
+    }
+
+    fn write_test_image(path: &str, payload: &[u8]) {
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.model = "Test SSD".into();
+        source.total_bytes = payload.len() as u64;
+        let mut file = File::create(path).expect("create test image");
+        write_flow_image_header(&mut file, &source).expect("write header");
+        file.write_all(payload).expect("write payload");
+        file.sync_all().expect("flush image");
+    }
+
+    #[test]
+    fn read_flow_image_header_parses_a_valid_image() {
+        let payload = b"flowclone restore payload";
+        let mut image_path = std::env::temp_dir();
+        image_path.push(format!(
+            "flowclone-cli-readhdr-{}.flowimg",
+            std::process::id()
+        ));
+        let image_path = image_path.to_string_lossy().to_string();
+        write_test_image(&image_path, payload);
+
+        let info = read_flow_image_header(&image_path).expect("read header");
+        assert_eq!(info.payload_bytes, payload.len() as u64);
+        assert_eq!(info.source.model, "Test SSD");
+        assert!(info.data_offset > FLOW_IMAGE_MAGIC.len() as u64);
+
+        std::fs::remove_file(image_path).ok();
+    }
+
+    #[test]
+    fn write_image_to_target_writes_exactly_the_payload() {
+        let payload = b"flowclone restore payload bytes!";
+        let mut image_path = std::env::temp_dir();
+        image_path.push(format!(
+            "flowclone-cli-restore-{}.flowimg",
+            std::process::id()
+        ));
+        let image_path = image_path.to_string_lossy().to_string();
+        let mut target_path = std::env::temp_dir();
+        target_path.push(format!(
+            "flowclone-cli-restore-{}.target",
+            std::process::id()
+        ));
+        let target_path = target_path.to_string_lossy().to_string();
+
+        write_test_image(&image_path, payload);
+        // The real path opens a device node (which exists); a file target must
+        // exist first because we open write-only without create.
+        File::create(&target_path).expect("pre-create target");
+
+        let info = read_flow_image_header(&image_path).expect("read header");
+        write_image_to_target(&image_path, &target_path, &info).expect("restore");
+
+        let written = std::fs::read(&target_path).expect("read target");
+        assert_eq!(written, payload);
+
+        std::fs::remove_file(image_path).ok();
+        std::fs::remove_file(target_path).ok();
     }
 
     #[test]
