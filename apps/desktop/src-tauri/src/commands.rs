@@ -1257,15 +1257,64 @@ pub async fn eject_disk(device_path: String) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn eject_device(device_path: &str) -> Result<(), String> {
+    // `diskutil eject` unmounts and powers down the disk so it can be unplugged.
+    // It fails with "Volume failed to eject" when a volume is busy (Spotlight,
+    // Finder previews, etc.), and can even return a non-zero exit while still
+    // ejecting the disk. So: try a graceful eject, and if the device is gone
+    // afterwards treat it as success regardless of the exit code. If a busy
+    // volume blocked it, force-unmount every volume and eject once more.
+    let _ = run_diskutil_eject(device_path);
+    if !macos_disk_present(device_path) {
+        return Ok(());
+    }
+
+    let _ = Command::new("diskutil")
+        .args(["unmountDisk", "force", device_path])
+        .output();
+    let last = run_diskutil_eject(device_path);
+    if !macos_disk_present(device_path) {
+        return Ok(());
+    }
+
+    match last {
+        Ok(message) if !message.is_empty() => Err(format!(
+            "{device_path} could not be ejected: {message}. Close apps using the disk and try again."
+        )),
+        _ => Err(format!(
+            "{device_path} is still in use. Close apps using the disk and try again."
+        )),
+    }
+}
+
+/// Runs `diskutil eject` and returns its trimmed error text (empty on success).
+/// A non-zero exit is returned as `Ok(message)` so the caller can decide based
+/// on whether the disk actually left the system.
+#[cfg(target_os = "macos")]
+fn run_diskutil_eject(device_path: &str) -> Result<String, String> {
     let output = Command::new("diskutil")
         .args(["eject", device_path])
         .output()
         .map_err(|error| format!("failed to run diskutil eject: {error}"))?;
     if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        return Ok(String::new());
     }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = if stderr.trim().is_empty() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        stderr.trim().to_string()
+    };
+    Ok(message)
+}
+
+/// Whether the disk still exists; a successful eject removes its device node.
+#[cfg(target_os = "macos")]
+fn macos_disk_present(device_path: &str) -> bool {
+    Command::new("diskutil")
+        .args(["info", device_path])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "windows")]
