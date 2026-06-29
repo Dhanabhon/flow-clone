@@ -2,9 +2,9 @@
 
 Move everything. Lose nothing.
 
-FlowClone is a modern, open-source SSD migration assistant for macOS. It is a
-Tauri desktop app with a React interface, English/Thai UI support, and a Rust
-workspace behind it.
+FlowClone is a modern, open-source SSD migration assistant for macOS and Windows
+(macOS-first). It is a Tauri desktop app with a React interface, English/Thai UI
+support, and a Rust workspace behind it.
 
 ## Safety warning
 
@@ -26,7 +26,7 @@ Both need elevated raw-disk access:
 **Direct Clone** is temporarily disabled in this release, and verification is
 still stubbed.
 
-## MVP scope
+## Features
 
 ### UI shell
 
@@ -259,6 +259,7 @@ distribution needs Windows code signing.
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — how to install and use FlowClone
 - [`CHANGELOG.md`](CHANGELOG.md)
 - [`docs/DESIGN.md`](docs/DESIGN.md)
+- [`docs/SPARSE_IMAGE.md`](docs/SPARSE_IMAGE.md) — the `.flowimg` v2 / sparse-image design
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/SAFETY.md`](docs/SAFETY.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
