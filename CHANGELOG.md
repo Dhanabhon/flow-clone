@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-29
+
 ### Added
 
+- **Eject** — external disk cards now have an eject button that safely powers
+  down the drive (macOS `diskutil eject`; Windows "Safely Remove") so it can be
+  unplugged without a separate tool.
 - **`.flowimg` v2 format + compression (CLI)** — `create-image --compress`
   writes a v2 image whose payload is a single zstd stream, producing a much
   smaller file on compressible disks. Restore auto-detects v1 vs v2 and
@@ -16,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the first slice of the sparse-image work (see `docs/SPARSE_IMAGE.md`);
   filesystem-aware "used-only" imaging follows in a later phase. The GUI does not
   expose compression yet.
+- **User guide** — `docs/USER_GUIDE.md` covers install, imaging, restore, eject,
+  the `.flowimg` file, and troubleshooting.
+
+### Fixed
+
+- **Dark-mode controls were unreadable** — the floating controls toolbar stayed
+  light in dark mode while its text turned near-white. The text is now dark and
+  readable, and the color tokens were reworked so opacity-based styles (badge and
+  banner tints) render instead of collapsing to transparent.
+- **macOS app menu** — the About, Hide, and Quit items showed the crate name
+  ("flowclone-desktop"); they now read "About FlowClone", "Hide FlowClone", and
+  "Quit".
+- **Restore wording** — removed stale copy claiming the restore step "does not
+  write to disk"; it does, and the text now reflects that.
 
 ## [0.1.0] - 2026-06-28
 

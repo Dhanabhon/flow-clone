@@ -35,6 +35,7 @@ still stubbed.
 - Switch between light and dark mode.
 - Detect disks automatically as they are connected or removed (event-driven via
   the native DiskArbitration watcher), with a manual refresh available.
+- Eject an external disk safely from its card before unplugging.
 
 ### Image Migration
 
@@ -120,6 +121,11 @@ admin rights:
 cargo build -p flowclone-cli
 sudo ./target/debug/flowclone create-image --source /dev/disk6 --output ~/Downloads/FlowClone-test.flowimg
 ```
+
+Pass `--compress` to `create-image` to write a smaller zstd-compressed `.flowimg`
+(v2 format); `restore-image` auto-detects and decompresses it, and still restores
+older uncompressed images. The GUI does not expose compression yet. See
+`docs/SPARSE_IMAGE.md`.
 
 Do not run the desktop GUI as root.
 
@@ -235,7 +241,7 @@ pnpm tauri build --bundles nsis
 Expected output:
 
 ```text
-target\release\bundle\nsis\FlowClone_0.1.0_x64-setup.exe
+target\release\bundle\nsis\FlowClone_0.2.0_x64-setup.exe
 ```
 
 If the Windows host is not x64, install the target explicitly and pass it:
