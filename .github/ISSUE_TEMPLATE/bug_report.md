@@ -1,7 +1,10 @@
 ---
 name: Bug report
 about: Report something broken in FlowClone
+title: ''
 labels: bug
+assignees: ''
+
 ---
 
 ## Summary
