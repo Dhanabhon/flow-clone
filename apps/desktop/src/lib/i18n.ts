@@ -13,8 +13,7 @@ const en = {
   themeToggle: "Toggle dark mode",
 
   homeTitle: "Move everything. Lose nothing.",
-  homeSubtitle:
-    "A modern, open-source SSD migration assistant for macOS. Beautifully simple, safe by design.",
+  homeSubtitle: "A data-migration assistant — light, fast, and safe.",
   refreshDisks: "Refresh disks",
   directCloneMode: "Direct Clone",
   comingSoon: "Coming soon",
@@ -176,9 +175,8 @@ const th: Record<MessageKey, string> = {
   langToggle: "เปลี่ยนภาษา",
   themeToggle: "สลับโหมดมืด",
 
-  homeTitle: "ย้ายทุกอย่าง ไม่เสียอะไรเลย",
-  homeSubtitle:
-    "ผู้ช่วยย้ายข้อมูล SSD สำหรับ macOS แบบโอเพนซอร์ส ใช้ง่ายและออกแบบมาให้ปลอดภัย",
+  homeTitle: "ย้ายครบ ไม่สูญหาย",
+  homeSubtitle: "ผู้ช่วยย้ายข้อมูล ใช้งาน เบา เร็ว และปลอดภัย",
   refreshDisks: "รีเฟรชดิสก์",
   directCloneMode: "Clone โดยตรง",
   comingSoon: "เร็ว ๆ นี้",
