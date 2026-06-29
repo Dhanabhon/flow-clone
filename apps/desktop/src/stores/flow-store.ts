@@ -17,6 +17,10 @@ interface FlowState {
   source: DiskInfo | null;
   target: DiskInfo | null;
   imagePath: string | null;
+  /** Image Migration: store only used blocks (Smart) vs a full copy (Exact). */
+  imageUsedOnly: boolean;
+  /** Image Migration: write a zstd-compressed `.flowimg`. */
+  imageCompress: boolean;
   jobId: string | null;
   progress: Progress | null;
   verify: boolean;
@@ -26,6 +30,8 @@ interface FlowState {
   setSource: (d: DiskInfo | null) => void;
   setTarget: (d: DiskInfo | null) => void;
   setImagePath: (path: string | null) => void;
+  setImageUsedOnly: (v: boolean) => void;
+  setImageCompress: (v: boolean) => void;
   setVerify: (v: boolean) => void;
   setReport: (report: string | null) => void;
   goTo: (p: FlowPhase) => void;
@@ -40,6 +46,8 @@ export const useFlowStore = create<FlowState>((set) => ({
   source: null,
   target: null,
   imagePath: null,
+  imageUsedOnly: false,
+  imageCompress: false,
   jobId: null,
   progress: null,
   verify: true,
@@ -55,6 +63,8 @@ export const useFlowStore = create<FlowState>((set) => ({
   setSource: (d) => set({ source: d }),
   setTarget: (d) => set({ target: d }),
   setImagePath: (path) => set({ imagePath: path }),
+  setImageUsedOnly: (v) => set({ imageUsedOnly: v }),
+  setImageCompress: (v) => set({ imageCompress: v }),
   setVerify: (v) => set({ verify: v }),
   setReport: (report) => set({ report }),
   goTo: (p) => set({ phase: p }),
@@ -68,6 +78,8 @@ export const useFlowStore = create<FlowState>((set) => ({
       source: null,
       target: null,
       imagePath: null,
+      imageUsedOnly: false,
+      imageCompress: false,
       jobId: null,
       progress: null,
       report: null,

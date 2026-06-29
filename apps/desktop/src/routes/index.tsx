@@ -143,8 +143,19 @@ function ConfirmationScreen() {
 
 function CloningScreen() {
   const { t } = useI18n();
-  const { mode, source, target, imagePath, progress, setProgress, beginClone, goTo, reset } =
-    useFlowStore();
+  const {
+    mode,
+    source,
+    target,
+    imagePath,
+    imageUsedOnly,
+    imageCompress,
+    progress,
+    setProgress,
+    beginClone,
+    goTo,
+    reset,
+  } = useFlowStore();
   const [isCancelling, setIsCancelling] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
@@ -227,13 +238,15 @@ function CloningScreen() {
     /dropping off the bus|did not come back|Device not configured|ended early|os error 6|os error 5/i.test(
       shown.current_operation
     );
-  const cliCommand = useMemo(
-    () =>
-      source && imagePath
-        ? `sudo ./target/debug/flowclone create-image --source ${shellQuote(source.device_path)} --output ${shellQuote(imagePath)}`
-        : "",
-    [imagePath, source]
-  );
+  const cliCommand = useMemo(() => {
+    if (!source || !imagePath) return "";
+    const flags = `${imageUsedOnly ? " --used-only" : ""}${
+      imageCompress ? " --compress" : ""
+    }`;
+    return `sudo ./target/debug/flowclone create-image --source ${shellQuote(
+      source.device_path
+    )} --output ${shellQuote(imagePath)}${flags}`;
+  }, [imagePath, source, imageUsedOnly, imageCompress]);
   const title = failed
     ? insufficientSpace
       ? t("notEnoughSpaceTitle")

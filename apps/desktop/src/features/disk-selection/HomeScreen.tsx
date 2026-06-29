@@ -45,10 +45,14 @@ export function HomeScreen() {
     source,
     target,
     imagePath,
+    imageUsedOnly,
+    imageCompress,
     setMode,
     setSource,
     setTarget,
     setImagePath,
+    setImageUsedOnly,
+    setImageCompress,
     setProgress,
     beginClone,
     goTo,
@@ -78,10 +82,6 @@ export function HomeScreen() {
     });
   }, [disks]);
 
-  // Image Migration options. Default to an exact full copy (the proven path with
-  // accurate progress); "smart" stores only used blocks (NTFS-aware, CLI).
-  const [imageContent, setImageContent] = useState<"exact" | "smart">("exact");
-  const [compressImage, setCompressImage] = useState(false);
 
   // Surface an image job that was interrupted by a crash or power loss.
   const [pending, setPending] = useState<PendingImage | null>(null);
@@ -188,8 +188,8 @@ export function HomeScreen() {
       const jobId = await createImageStub(
         imageSource.device_path,
         imagePath,
-        imageContent === "smart",
-        compressImage
+        imageUsedOnly,
+        imageCompress
       );
       beginClone(jobId, "image");
     } catch (err) {
@@ -335,10 +335,10 @@ export function HomeScreen() {
           canCreate={!!imageSource && !!imagePath}
           imagePath={imagePath}
           source={imageSource}
-          content={imageContent}
-          onContentChange={setImageContent}
-          compress={compressImage}
-          onCompressChange={setCompressImage}
+          content={imageUsedOnly ? "smart" : "exact"}
+          onContentChange={(value) => setImageUsedOnly(value === "smart")}
+          compress={imageCompress}
+          onCompressChange={setImageCompress}
           onChooseLocation={chooseImageLocation}
           onCreate={startImageMigration}
         />
