@@ -124,8 +124,10 @@ sudo ./target/debug/flowclone create-image --source /dev/disk6 --output ~/Downlo
 
 Pass `--compress` to `create-image` to write a smaller zstd-compressed `.flowimg`
 (v2 format); `restore-image` auto-detects and decompresses it, and still restores
-older uncompressed images. The GUI does not expose compression yet. See
-`docs/SPARSE_IMAGE.md`.
+older uncompressed images. Pass `--used-only` to read and store only the
+allocated blocks of an NTFS disk (much faster and smaller on a mostly-empty
+disk); it falls back to a full image if the disk isn't GPT/NTFS. The two flags
+combine. The GUI does not expose either yet. See `docs/SPARSE_IMAGE.md`.
 
 Do not run the desktop GUI as root.
 

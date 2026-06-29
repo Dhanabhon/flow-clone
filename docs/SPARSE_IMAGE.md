@@ -1,7 +1,9 @@
 # Sparse Image — Design (`.flowimg` v2)
 
-Status: **Phase 1 + Phase 2.1 implemented (CLI)**; Phase 2.2 (NTFS producer),
-Phase 3, Phase 4 not yet started. Read `docs/SAFETY.md` first.
+Status: **Phases 1, 2.1, and 2.2 implemented (CLI)**; Phase 3 (APFS) and Phase 4
+(GUI) not yet started. Read `docs/SAFETY.md` first. `create-image --used-only`
+now writes an NTFS-aware sparse image (reading only allocated blocks), with a
+full-raw fallback whenever the disk isn't GPT/NTFS or anything fails to parse.
 
 - **Phase 1** — v2 container + Exact (full) mode + optional zstd compression
   (`create-image --compress`), with v1/v2 auto-detection on restore.
@@ -156,9 +158,12 @@ target must be ≥ source.capacity_bytes (same rule as v1).
        partition, allocated clusters → present blocks; everything else (GPT,
        gaps, non-NTFS partitions, volume slack, unparseable partitions) kept
        whole. Integration-tested on a synthetic GPT+NTFS disk.
-     - next: wire `create-image --used-only` — read only present blocks (the
-       create-time speedup) and write a sparse v2 image, with full-raw fallback;
-       round-trip test (create → restore reproduces the disk byte-for-byte).
+     - ✅ wired `create-image --used-only`: detect the sector size from the GPT,
+       compute the map, and `create_sparse_image_file` reads/stores only the
+       present blocks (the create-time speedup), composing with `--compress`. Any
+       failure falls back to a full image. Create→restore round-trip tests prove
+       present blocks survive and dropped blocks come back as zeros.
+   - **Done for the CLI.** Remaining: APFS (Phase 3) and the GUI toggle (Phase 4).
 3. **APFS used-only** — APFS space manager → block map; extend Smart.
 4. **UI** — Smart/Exact toggle, Compress checkbox, size/time estimate, wired to
    the new CLI flags.

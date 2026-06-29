@@ -6,9 +6,8 @@
 //! top of this. The bias is always toward *including* a region — a block wrongly
 //! omitted would be lost on restore — so anything we can't understand is kept.
 //!
-//! Not wired into `create-image` yet; the items below are exercised by tests
-//! until the producer lands.
-#![allow(dead_code)]
+//! Wired into `create-image --used-only`, with a full-raw fallback whenever any
+//! step can't be trusted.
 
 use crate::BlockMap;
 use anyhow::Result;
@@ -85,6 +84,21 @@ pub fn parse_gpt<R: Read + Seek>(reader: &mut R, sector_size: u64) -> Result<Vec
         });
     }
     Ok(partitions)
+}
+
+/// Detect the disk's logical sector size from where the GPT header lands: the
+/// "EFI PART" signature sits at LBA 1, i.e. byte 512 on a 512-byte-sector disk
+/// or byte 4096 on a 4Kn disk. Errors if there's no GPT (the caller then images
+/// the disk in full).
+pub fn detect_sector_size<R: Read + Seek>(reader: &mut R) -> Result<u64> {
+    for size in [512u64, 4096] {
+        reader.seek(SeekFrom::Start(size))?;
+        let mut signature = [0u8; 8];
+        if reader.read_exact(&mut signature).is_ok() && &signature == GPT_SIGNATURE {
+            return Ok(size);
+        }
+    }
+    anyhow::bail!("no GPT found");
 }
 
 /// The NTFS boot-sector (BPB) fields needed to locate and size the `$Bitmap`.

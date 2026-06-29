@@ -223,11 +223,12 @@ fn create_image() -> Result<()> {
     let source_path = arg_value(&args, "--source")?;
     let output_path = arg_value(&args, "--output")?;
     let compress = args.iter().any(|arg| arg == "--compress");
-    // Phase 1 has no filesystem parser yet, so "used-only" degrades to a full
-    // image rather than failing — keeps the flag stable for the Smart UI path.
-    if args.iter().any(|arg| arg == "--used-only") {
-        eprintln!("note: --used-only is not implemented yet; writing a full image");
-    }
+    let used_only = args.iter().any(|arg| arg == "--used-only");
+    let compression = if compress {
+        Compression::Zstd
+    } else {
+        Compression::None
+    };
     let catalog = flowclone_disk::DiskCatalog::platform_default();
     let source = catalog
         .find(source_path)?
@@ -242,10 +243,6 @@ fn create_image() -> Result<()> {
     let space = flowclone_raw::ensure_free_space_for_output(output_path, required_bytes)?;
     eprintln!("image:  {} (estimate)", humansize(required_bytes));
     eprintln!("free:   {}", humansize(space.available_bytes));
-    eprintln!(
-        "mode:   full image{}",
-        if compress { ", zstd-compressed" } else { "" }
-    );
     eprintln!("note:   keep the command running until done");
 
     // Clear any leftover cancel sentinel from a previous run so it doesn't
@@ -256,13 +253,54 @@ fn create_image() -> Result<()> {
     // return ENXIO / "Device not configured" once they reach a mounted volume),
     // so it unmounts the disk's volumes first and remounts them on drop. Windows
     // serves raw reads while mounted, so its prep is a no-op.
+    // macOS needs the disk unmounted before raw reads, so compute the used-block
+    // map after preparing the source.
     let _prep = prepare_source_for_read(&source.device_path)?;
+
+    if used_only {
+        match try_used_block_map(&raw_source, source.total_bytes) {
+            Ok(map) => {
+                let stored = map.present_bytes(IMAGE_BLOCK_SIZE as u64, source.total_bytes);
+                eprintln!(
+                    "mode:   used-only — storing {} of {}{}",
+                    humansize(stored),
+                    humansize(source.total_bytes),
+                    if compress { " (zstd)" } else { "" }
+                );
+                create_sparse_image_file(&raw_source, output_path, &source, &map, compression)?;
+                return Ok(());
+            }
+            Err(error) => {
+                eprintln!("note:   used-only unavailable ({error}); writing a full image");
+            }
+        }
+    }
+
+    eprintln!(
+        "mode:   full image{}",
+        if compress { " (zstd)" } else { "" }
+    );
     if compress {
         create_compressed_image_file(&raw_source, output_path, &source)?;
     } else {
         create_flow_image_file(&raw_source, output_path, &source)?;
     }
     Ok(())
+}
+
+/// Open the raw source read-only and work out which blocks hold real data. Any
+/// failure (not GPT, unknown filesystem, parse error) propagates so the caller
+/// falls back to a full image — used-only never guesses.
+fn try_used_block_map(raw_source: &str, total_bytes: u64) -> Result<BlockMap> {
+    let mut reader = File::open(raw_source)
+        .map_err(|error| anyhow::anyhow!("open source {raw_source}: {error}"))?;
+    let sector_size = used_blocks::detect_sector_size(&mut reader)?;
+    used_blocks::compute_used_block_map(
+        &mut reader,
+        total_bytes,
+        IMAGE_BLOCK_SIZE as u64,
+        sector_size,
+    )
 }
 
 /// Undoes the disk preparation done by [`prepare_source_for_read`] /
@@ -895,6 +933,159 @@ fn create_compressed_image_file(
     image.sync_all()?;
     drop(image);
     finalize_image(&partial_path, image_path)
+}
+
+/// Create a sparse (used-only) image: a v2 header carrying `block_map`, then only
+/// the present blocks. The full-disk size is recorded in the header so restore
+/// zero-fills the gaps.
+fn create_sparse_image_file(
+    source_path: &str,
+    image_path: &str,
+    source: &DiskInfo,
+    block_map: &BlockMap,
+    compression: Compression,
+) -> Result<()> {
+    let partial_path = partial_image_path(image_path);
+    let cancel_path = cancel_sentinel_path(image_path);
+    let mut reader = File::open(source_path)
+        .map_err(|error| anyhow::anyhow!("open source {source_path}: {error}"))?;
+    let mut image = File::create(&partial_path)
+        .map_err(|error| anyhow::anyhow!("create image {partial_path}: {error}"))?;
+    write_flow_image_header_v2(&mut image, source, compression, Some(block_map))?;
+
+    match compression {
+        Compression::None => {
+            copy_present_blocks(
+                &mut reader,
+                &mut image,
+                source,
+                block_map,
+                image_path,
+                &cancel_path,
+                &partial_path,
+            )?;
+            image.sync_all()?;
+            drop(image);
+        }
+        Compression::Zstd => {
+            let mut encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
+                .map_err(|error| anyhow::anyhow!("init compressor: {error}"))?;
+            copy_present_blocks(
+                &mut reader,
+                &mut encoder,
+                source,
+                block_map,
+                image_path,
+                &cancel_path,
+                &partial_path,
+            )?;
+            let image = encoder
+                .finish()
+                .map_err(|error| anyhow::anyhow!("finish compressor: {error}"))?;
+            image.sync_all()?;
+            drop(image);
+        }
+    }
+    finalize_image(&partial_path, image_path)
+}
+
+/// Read and stream only the present blocks of a sparse image: seek to each one,
+/// read it (with the same cancellation + bad-block resilience as the full path),
+/// and write it to `sink`. Absent blocks are never read — that's the speedup.
+fn copy_present_blocks<W: Write>(
+    reader: &mut File,
+    sink: &mut W,
+    source: &DiskInfo,
+    block_map: &BlockMap,
+    image_path: &str,
+    cancel_path: &str,
+    partial_path: &str,
+) -> Result<()> {
+    let block_size = IMAGE_BLOCK_SIZE as u64;
+    let total_bytes = source.total_bytes;
+    let present_bytes = block_map.present_bytes(block_size, total_bytes);
+
+    let start = Instant::now();
+    let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
+    let mut bytes_done = 0u64;
+    let mut last_print = Instant::now();
+    let mut bad_regions: Vec<(u64, u64)> = Vec::new();
+    let mut bad_bytes = 0u64;
+
+    for &[run_start, count] in &block_map.runs {
+        for block in run_start..run_start + count {
+            if std::path::Path::new(cancel_path).exists() {
+                let _ = std::fs::remove_file(partial_path);
+                let _ = std::fs::remove_file(cancel_path);
+                anyhow::bail!("cancelled by user");
+            }
+            let offset = block * block_size;
+            let len = (total_bytes - offset).min(block_size) as usize;
+
+            if let Err(error) = read_block_at(reader, source, offset, &mut buf[..len]) {
+                // Genuinely unreadable: zero-fill, record it, and keep going so a
+                // single bad sector doesn't abort the whole image.
+                eprintln!(
+                    "bad region at offset {} ({}): {error}; zero-filled",
+                    offset,
+                    humansize(offset)
+                );
+                buf[..len].fill(0);
+                bad_regions.push((offset, len as u64));
+                bad_bytes += len as u64;
+                if too_damaged(bad_bytes, bad_regions.len()) {
+                    anyhow::bail!(
+                        "drive too damaged: {} unreadable across {} regions — aborting",
+                        humansize(bad_bytes),
+                        bad_regions.len()
+                    );
+                }
+            }
+
+            sink.write_all(&buf[..len]).map_err(|error| {
+                anyhow::anyhow!("write image at source offset {offset}: {error}")
+            })?;
+            bytes_done += len as u64;
+
+            if last_print.elapsed().as_secs() >= 1 || bytes_done == present_bytes {
+                eprintln!(
+                    "{}",
+                    progress_line(bytes_done, present_bytes, start.elapsed().as_secs_f64())
+                );
+                last_print = Instant::now();
+            }
+        }
+    }
+
+    if !bad_regions.is_empty() {
+        write_bad_region_log(image_path, &bad_regions);
+        eprintln!(
+            "WARNING: {} unreadable across {} region(s) were zero-filled; see {}",
+            humansize(bad_bytes),
+            bad_regions.len(),
+            bad_region_log_path(image_path)
+        );
+    }
+
+    eprintln!(
+        "done in {}, stored {}",
+        format_duration(start.elapsed().as_secs()),
+        humansize(bytes_done)
+    );
+    Ok(())
+}
+
+/// Read exactly `buf.len()` bytes at `offset`, retrying once via a disk
+/// re-acquire (for USB drops) before giving up on the region.
+fn read_block_at(reader: &mut File, source: &DiskInfo, offset: u64, buf: &mut [u8]) -> Result<()> {
+    reader.seek(SeekFrom::Start(offset))?;
+    if reader.read_exact(buf).is_ok() {
+        return Ok(());
+    }
+    *reader = reacquire_reader(source, offset)?;
+    reader
+        .read_exact(buf)
+        .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 /// Atomically publish a finished `.part` image as the real file.
@@ -1660,6 +1851,68 @@ mod tests {
     #[test]
     fn restores_a_sparse_image_compressed() {
         sparse_round_trip(Compression::Zstd, "zstd");
+    }
+
+    /// The producer half: create a sparse image straight from a source file using
+    /// a block map, then restore it and confirm present blocks survive and absent
+    /// ones come back as zeros (not their old contents).
+    fn create_sparse_round_trip(compression: Compression, suffix: &str) {
+        let bs = IMAGE_BLOCK_SIZE;
+        let full_len = 3 * bs;
+        let mut source_bytes = vec![0u8; full_len];
+        source_bytes[0..bs].fill(0xAB); // block 0 present
+        source_bytes[bs..2 * bs].fill(0xEE); // block 1 absent — must be dropped
+        source_bytes[2 * bs..3 * bs].fill(0xCD); // block 2 present
+        let map = BlockMap {
+            runs: vec![[0, 1], [2, 1]],
+        };
+
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let source_path = dir
+            .join(format!("flowclone-cli-csparse-{suffix}-{pid}.source"))
+            .to_string_lossy()
+            .to_string();
+        let image_path = dir
+            .join(format!("flowclone-cli-csparse-{suffix}-{pid}.flowimg"))
+            .to_string_lossy()
+            .to_string();
+        let target_path = dir
+            .join(format!("flowclone-cli-csparse-{suffix}-{pid}.target"))
+            .to_string_lossy()
+            .to_string();
+
+        std::fs::write(&source_path, &source_bytes).expect("write source");
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.total_bytes = full_len as u64;
+
+        create_sparse_image_file(&source_path, &image_path, &source, &map, compression)
+            .expect("create sparse");
+
+        let info = read_flow_image_header(&image_path).expect("read header");
+        assert!(info.block_map.is_some());
+
+        File::create(&target_path).expect("pre-create target");
+        write_image_to_target(&image_path, &target_path, &info).expect("restore");
+
+        // Block 1 was absent → restored as zeros; the dropped 0xEE must be gone.
+        let mut expected = source_bytes;
+        expected[bs..2 * bs].fill(0);
+        assert_eq!(std::fs::read(&target_path).expect("read target"), expected);
+
+        std::fs::remove_file(source_path).ok();
+        std::fs::remove_file(image_path).ok();
+        std::fs::remove_file(target_path).ok();
+    }
+
+    #[test]
+    fn create_sparse_image_round_trips_uncompressed() {
+        create_sparse_round_trip(Compression::None, "none");
+    }
+
+    #[test]
+    fn create_sparse_image_round_trips_compressed() {
+        create_sparse_round_trip(Compression::Zstd, "zstd");
     }
 
     #[test]

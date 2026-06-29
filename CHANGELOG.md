@@ -9,13 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Sparse `.flowimg` foundation (CLI).** The v2 format gains a `used-only` mode
-  carrying a `block_map` of present-block runs, and restore reconstructs the disk
-  from it (present blocks from the payload, absent blocks as zeros). This is the
-  format/restore half of sparse imaging; the filesystem-aware producer that
-  fills the map (NTFS `$Bitmap`) lands next, so `--used-only` still writes a full
-  image for now. Round-trip tests cover compressed and uncompressed sparse
-  images.
+- **NTFS used-only imaging (CLI): `create-image --used-only`.** Reads the GPT and
+  each NTFS partition's `$Bitmap` and stores only the allocated blocks — much
+  faster and smaller on a mostly-empty disk (e.g. ~50 GB used on a 256 GB drive).
+  The v2 format carries a `block_map`; restore reconstructs the disk (present
+  blocks from the payload, absent blocks as zeros). Biased to include — GPT,
+  gaps, non-NTFS partitions, and anything that fails to parse are kept whole — and
+  it falls back to a full image whenever the disk isn't GPT/NTFS. Combines with
+  `--compress`. The NTFS parsing and the create→restore round-trip are covered by
+  tests; the GUI does not expose it yet.
 
 ## [0.2.1] - 2026-06-29
 
