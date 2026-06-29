@@ -86,6 +86,231 @@ pub fn parse_gpt<R: Read + Seek>(reader: &mut R, sector_size: u64) -> Result<Vec
     Ok(partitions)
 }
 
+/// The NTFS boot-sector (BPB) fields needed to locate and size the `$Bitmap`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtfsBoot {
+    pub bytes_per_sector: u64,
+    pub sectors_per_cluster: u64,
+    pub total_sectors: u64,
+    /// Cluster number (LCN) of the `$MFT`.
+    pub mft_lcn: u64,
+    /// Size of one MFT record, in bytes.
+    pub mft_record_size: u64,
+}
+
+impl NtfsBoot {
+    pub fn cluster_size(&self) -> u64 {
+        self.bytes_per_sector * self.sectors_per_cluster
+    }
+
+    /// Total clusters in the volume (the `$Bitmap` has one bit per cluster).
+    pub fn total_clusters(&self) -> u64 {
+        self.total_sectors / self.sectors_per_cluster
+    }
+}
+
+const NTFS_OEM_ID: &[u8; 8] = b"NTFS    ";
+/// Plausibility caps — a value outside these means "don't trust it, fall back to
+/// a full image" rather than risk a wrong layout.
+const MAX_BYTES_PER_SECTOR: u64 = 4096;
+const MAX_CLUSTER_SIZE: u64 = 2 * 1024 * 1024;
+const MAX_MFT_RECORD_SIZE: u64 = 64 * 1024;
+
+/// Parse an NTFS boot sector (the first sector of an NTFS partition).
+pub fn parse_ntfs_boot(boot: &[u8]) -> Result<NtfsBoot> {
+    if boot.len() < 512 {
+        anyhow::bail!("boot sector too short");
+    }
+    if &boot[3..11] != NTFS_OEM_ID {
+        anyhow::bail!("not an NTFS partition");
+    }
+
+    let bytes_per_sector = u16::from_le_bytes(boot[11..13].try_into().unwrap()) as u64;
+    if !(256..=MAX_BYTES_PER_SECTOR).contains(&bytes_per_sector)
+        || !bytes_per_sector.is_power_of_two()
+    {
+        anyhow::bail!("implausible bytes-per-sector: {bytes_per_sector}");
+    }
+
+    // Sectors per cluster: a literal power of two when <= 0x80, otherwise a
+    // negative power (`2^(256 - value)`) for very large clusters.
+    let spc_raw = boot[13];
+    let sectors_per_cluster = if spc_raw <= 0x80 {
+        spc_raw as u64
+    } else {
+        1u64 << (256 - spc_raw as u32)
+    };
+    if sectors_per_cluster == 0 || !sectors_per_cluster.is_power_of_two() {
+        anyhow::bail!("implausible sectors-per-cluster: {spc_raw:#x}");
+    }
+    let cluster_size = bytes_per_sector * sectors_per_cluster;
+    if cluster_size > MAX_CLUSTER_SIZE {
+        anyhow::bail!("implausible cluster size: {cluster_size}");
+    }
+
+    let total_sectors = u64::from_le_bytes(boot[40..48].try_into().unwrap());
+    if total_sectors == 0 {
+        anyhow::bail!("zero total sectors");
+    }
+    let mft_lcn = u64::from_le_bytes(boot[48..56].try_into().unwrap());
+
+    // MFT record size: a positive value is in clusters; a negative one is
+    // `2^(-value)` bytes (the common 1024-byte record is stored as -10).
+    let clusters_per_mft = boot[64] as i8;
+    let mft_record_size = if clusters_per_mft >= 0 {
+        clusters_per_mft as u64 * cluster_size
+    } else {
+        1u64 << ((-clusters_per_mft) as u32)
+    };
+    if !(256..=MAX_MFT_RECORD_SIZE).contains(&mft_record_size) || !mft_record_size.is_power_of_two()
+    {
+        anyhow::bail!("implausible MFT record size: {mft_record_size}");
+    }
+
+    Ok(NtfsBoot {
+        bytes_per_sector,
+        sectors_per_cluster,
+        total_sectors,
+        mft_lcn,
+        mft_record_size,
+    })
+}
+
+/// Apply the NTFS Update Sequence Array fixups to a FILE/INDX record in place.
+///
+/// NTFS overwrites the last two bytes of every `sector_size` chunk of a record
+/// with an update-sequence number; the real bytes live in the USA. Restoring
+/// them is mandatory before reading any field that may straddle a sector
+/// boundary (e.g. a long data-run list). A mismatch means the record is torn or
+/// corrupt, so we refuse it rather than read garbage.
+pub fn apply_fixups(record: &mut [u8], sector_size: usize) -> Result<()> {
+    if record.len() < 8 {
+        anyhow::bail!("record too short for a USA header");
+    }
+    let usa_offset = u16::from_le_bytes(record[4..6].try_into().unwrap()) as usize;
+    let usa_count = u16::from_le_bytes(record[6..8].try_into().unwrap()) as usize;
+    if usa_count == 0 {
+        anyhow::bail!("record has no update sequence array");
+    }
+    let sectors = usa_count - 1; // entry 0 is the USN itself
+    if sector_size == 0 || record.len() < sectors * sector_size {
+        anyhow::bail!("record too small for its update sequence array");
+    }
+    if usa_offset + usa_count * 2 > record.len() {
+        anyhow::bail!("update sequence array out of range");
+    }
+
+    let usn = [record[usa_offset], record[usa_offset + 1]];
+    for i in 0..sectors {
+        let pos = (i + 1) * sector_size - 2;
+        if [record[pos], record[pos + 1]] != usn {
+            anyhow::bail!("update sequence mismatch — record is corrupt");
+        }
+        let entry = usa_offset + 2 * (i + 1);
+        let (a, b) = (record[entry], record[entry + 1]);
+        record[pos] = a;
+        record[pos + 1] = b;
+    }
+    Ok(())
+}
+
+/// A contiguous run of clusters on disk: starting LCN and length in clusters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DataRun {
+    pub lcn: u64,
+    pub clusters: u64,
+}
+
+/// Decode an NTFS data-run list into absolute `(LCN, length)` runs. Sparse runs
+/// (no offset) are skipped — `$Bitmap` is never sparse, and skipping is the safe
+/// default since those clusters hold no on-disk data.
+pub fn parse_data_runs(bytes: &[u8]) -> Result<Vec<DataRun>> {
+    let mut runs = Vec::new();
+    let mut lcn: i64 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let header = bytes[i];
+        if header == 0 {
+            break; // end of the run list
+        }
+        i += 1;
+        let len_size = (header & 0x0F) as usize;
+        let off_size = (header >> 4) as usize;
+        if len_size == 0 || i + len_size + off_size > bytes.len() {
+            anyhow::bail!("truncated data run");
+        }
+
+        let mut length: u64 = 0;
+        for (b, &byte) in bytes[i..i + len_size].iter().enumerate() {
+            length |= (byte as u64) << (8 * b);
+        }
+        i += len_size;
+
+        if off_size == 0 {
+            // Sparse run: no clusters on disk. Skip it.
+            continue;
+        }
+        let mut offset: i64 = 0;
+        for (b, &byte) in bytes[i..i + off_size].iter().enumerate() {
+            offset |= (byte as i64) << (8 * b);
+        }
+        let shift = 64 - 8 * off_size as u32; // sign-extend the signed LE offset
+        offset = (offset << shift) >> shift;
+        i += off_size;
+
+        lcn += offset;
+        if lcn < 0 {
+            anyhow::bail!("data run resolved to a negative LCN");
+        }
+        runs.push(DataRun {
+            lcn: lcn as u64,
+            clusters: length,
+        });
+    }
+    Ok(runs)
+}
+
+const ATTR_DATA: u32 = 0x80;
+const ATTR_END: u32 = 0xFFFF_FFFF;
+
+/// From a fixed-up MFT FILE record, return the unnamed `$DATA` attribute's
+/// on-disk data runs and its real (valid) size in bytes. `$Bitmap`'s `$DATA` is
+/// non-resident; a resident one would be unexpected and is rejected.
+pub fn data_attribute_runs(record: &[u8]) -> Result<(Vec<DataRun>, u64)> {
+    if record.len() < 24 || &record[0..4] != b"FILE" {
+        anyhow::bail!("not an MFT FILE record");
+    }
+    let mut off = u16::from_le_bytes(record[20..22].try_into().unwrap()) as usize;
+    while off + 8 <= record.len() {
+        let attr_type = u32::from_le_bytes(record[off..off + 4].try_into().unwrap());
+        if attr_type == ATTR_END {
+            break;
+        }
+        let attr_len = u32::from_le_bytes(record[off + 4..off + 8].try_into().unwrap()) as usize;
+        if attr_len == 0 || off + attr_len > record.len() {
+            anyhow::bail!("bad attribute length");
+        }
+        let non_resident = record[off + 8];
+        let name_len = record[off + 9];
+        if attr_type == ATTR_DATA && name_len == 0 {
+            if non_resident == 0 {
+                anyhow::bail!("$DATA is resident (unexpected for $Bitmap)");
+            }
+            let runs_offset =
+                u16::from_le_bytes(record[off + 0x20..off + 0x22].try_into().unwrap()) as usize;
+            let real_size = u64::from_le_bytes(record[off + 0x30..off + 0x38].try_into().unwrap());
+            let runs_start = off + runs_offset;
+            let runs_end = off + attr_len;
+            if runs_offset < 0x40 || runs_start > runs_end || runs_end > record.len() {
+                anyhow::bail!("data run list out of range");
+            }
+            return Ok((parse_data_runs(&record[runs_start..runs_end])?, real_size));
+        }
+        off += attr_len;
+    }
+    anyhow::bail!("no non-resident unnamed $DATA attribute found");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +363,119 @@ mod tests {
     fn parse_gpt_rejects_a_non_gpt_disk() {
         let disk = vec![0u8; 512 * 4];
         assert!(parse_gpt(&mut Cursor::new(disk), 512).is_err());
+    }
+
+    fn synthetic_ntfs_boot() -> Vec<u8> {
+        let mut boot = vec![0u8; 512];
+        put(&mut boot, 3, NTFS_OEM_ID);
+        put(&mut boot, 11, &512u16.to_le_bytes()); // bytes per sector
+        boot[13] = 8; // sectors per cluster → 4 KiB clusters
+        put(&mut boot, 40, &2_000_000u64.to_le_bytes()); // total sectors
+        put(&mut boot, 48, &786_432u64.to_le_bytes()); // $MFT LCN
+        boot[64] = (-10i8) as u8; // 1024-byte MFT records
+        boot
+    }
+
+    #[test]
+    fn parse_ntfs_boot_reads_geometry() {
+        let boot = parse_ntfs_boot(&synthetic_ntfs_boot()).expect("parse boot");
+        assert_eq!(boot.bytes_per_sector, 512);
+        assert_eq!(boot.sectors_per_cluster, 8);
+        assert_eq!(boot.cluster_size(), 4096);
+        assert_eq!(boot.total_sectors, 2_000_000);
+        assert_eq!(boot.total_clusters(), 250_000);
+        assert_eq!(boot.mft_lcn, 786_432);
+        assert_eq!(boot.mft_record_size, 1024);
+    }
+
+    #[test]
+    fn parse_ntfs_boot_rejects_non_ntfs_and_insane_values() {
+        assert!(parse_ntfs_boot(&[0u8; 512]).is_err()); // no NTFS OEM id
+        let mut boot = synthetic_ntfs_boot();
+        put(&mut boot, 11, &777u16.to_le_bytes()); // not a power of two
+        assert!(parse_ntfs_boot(&boot).is_err());
+    }
+
+    #[test]
+    fn apply_fixups_restores_sector_tails() {
+        let sector = 512usize;
+        let mut record = vec![0u8; 2 * sector];
+        put(&mut record, 0, b"FILE");
+        put(&mut record, 4, &0x30u16.to_le_bytes()); // USA offset
+        put(&mut record, 6, &3u16.to_le_bytes()); // USN + 2 sectors
+        let usn = [0xAA, 0xBB];
+        put(&mut record, 0x30, &usn);
+        put(&mut record, 0x32, &[0x01, 0x02]); // saved tail of sector 0
+        put(&mut record, 0x34, &[0x03, 0x04]); // saved tail of sector 1
+        put(&mut record, sector - 2, &usn); // current tails hold the USN
+        put(&mut record, 2 * sector - 2, &usn);
+
+        apply_fixups(&mut record, sector).expect("fixups");
+        assert_eq!(&record[sector - 2..sector], &[0x01, 0x02]);
+        assert_eq!(&record[2 * sector - 2..2 * sector], &[0x03, 0x04]);
+    }
+
+    #[test]
+    fn apply_fixups_rejects_a_torn_record() {
+        let sector = 512usize;
+        let mut record = vec![0u8; 2 * sector];
+        put(&mut record, 0, b"FILE");
+        put(&mut record, 4, &0x30u16.to_le_bytes());
+        put(&mut record, 6, &3u16.to_le_bytes());
+        let usn = [0xAA, 0xBB];
+        put(&mut record, 0x30, &usn);
+        put(&mut record, sector - 2, &usn); // sector 0 tail matches
+        put(&mut record, 2 * sector - 2, &[0, 0]); // sector 1 tail does not
+        assert!(apply_fixups(&mut record, sector).is_err());
+    }
+
+    #[test]
+    fn parse_data_runs_decodes_lengths_and_signed_offsets() {
+        // 0x21: len 1B (=4), off 2B (=32)  -> LCN 32, 4 clusters
+        // 0x11: len 1B (=8), off 1B (=-1)  -> LCN 31, 8 clusters
+        // 0x00: end
+        let bytes = [0x21, 0x04, 0x20, 0x00, 0x11, 0x08, 0xFF, 0x00];
+        let runs = parse_data_runs(&bytes).expect("runs");
+        assert_eq!(
+            runs,
+            vec![
+                DataRun {
+                    lcn: 32,
+                    clusters: 4
+                },
+                DataRun {
+                    lcn: 31,
+                    clusters: 8
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn data_attribute_runs_extracts_nonresident_data() {
+        let mut record = vec![0u8; 1024];
+        put(&mut record, 0, b"FILE");
+        put(&mut record, 20, &0x38u16.to_le_bytes()); // first attribute at 0x38
+
+        let a = 0x38usize;
+        put(&mut record, a, &ATTR_DATA.to_le_bytes());
+        let attr_len = 0x48u32; // non-resident header (0x40) + 8 bytes of runs
+        put(&mut record, a + 4, &attr_len.to_le_bytes());
+        record[a + 8] = 1; // non-resident
+        record[a + 9] = 0; // unnamed
+        put(&mut record, a + 0x20, &0x40u16.to_le_bytes()); // data runs at +0x40
+        put(&mut record, a + 0x30, &8192u64.to_le_bytes()); // real size
+        put(&mut record, a + 0x40, &[0x21, 0x04, 0x20, 0x00, 0x00]); // LCN 32, 4 clusters
+        put(&mut record, a + attr_len as usize, &ATTR_END.to_le_bytes());
+
+        let (runs, real_size) = data_attribute_runs(&record).expect("data runs");
+        assert_eq!(real_size, 8192);
+        assert_eq!(
+            runs,
+            vec![DataRun {
+                lcn: 32,
+                clusters: 4
+            }]
+        );
     }
 }
