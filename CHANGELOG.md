@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-29
+
 ### Fixed
 
 - **`--used-only` now works on real macOS disks.** The GPT/NTFS parsers did
@@ -163,6 +165,10 @@ still stubbed.
   disk as target) lives in the Rust core, not the UI.
 - Destructive actions require typed `ERASE` confirmation.
 
-[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/Dhanabhon/flow-clone/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/Dhanabhon/flow-clone/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/Dhanabhon/flow-clone/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Dhanabhon/flow-clone/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/Dhanabhon/flow-clone/releases/tag/v0.0.1
