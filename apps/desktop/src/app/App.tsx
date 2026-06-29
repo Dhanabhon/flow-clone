@@ -1,7 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Routes } from "@/routes";
 import { ShellControls } from "@/components/flowclone/ShellControls";
+import { isTauriRuntime } from "@/lib/tauri";
+import { useI18n } from "@/lib/i18n";
+import { useFlowStore } from "@/stores/flow-store";
 import { useLocaleStore } from "@/stores/locale-store";
 import { useThemeStore } from "@/stores/theme-store";
 
@@ -25,6 +30,39 @@ export default function App() {
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+
+  // Warn before closing the window while a migration/restore is running, so a
+  // stray Cmd-Q doesn't silently interrupt a long job. `t` is read through a ref
+  // so the listener is set up once but always speaks the current language.
+  const { t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        if (useFlowStore.getState().phase !== "cloning") return;
+        const tt = tRef.current;
+        event.preventDefault();
+        const confirmed = await ask(tt("closeDuringJobBody"), {
+          title: tt("closeDuringJobTitle"),
+          kind: "warning",
+          okLabel: tt("closeAnyway"),
+          cancelLabel: tt("keepRunning"),
+        });
+        if (confirmed) await getCurrentWindow().destroy();
+      })
+      .then((fn) => {
+        if (active) unlisten = fn;
+        else fn();
+      });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

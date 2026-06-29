@@ -42,6 +42,13 @@ const en = {
   imageCompressHint: "Smaller file (zstd), at the cost of more CPU.",
   imageEstimate: "Estimated: {size} · about {duration}",
   imageEstimateCompressed: "smaller with compression",
+  imageRecommendation:
+    "Recommended: Exact makes a guaranteed bit-for-bit copy. For a Windows (NTFS) disk, Smart + Compress makes a much smaller, faster image.",
+  closeDuringJobTitle: "A job is still running",
+  closeDuringJobBody:
+    "Closing FlowClone now will interrupt the migration in progress. Quit anyway?",
+  closeAnyway: "Quit anyway",
+  keepRunning: "Keep running",
   chooseImageLocation: "Choose Image Location",
   chooseDifferentLocation: "Choose Different Location",
   createMigrationImage: "Create Image",
@@ -220,6 +227,12 @@ const th: Record<MessageKey, string> = {
   imageCompressHint: "ไฟล์เล็กลง (zstd) แต่ใช้ CPU มากขึ้น",
   imageEstimate: "ประมาณ: {size} · ราว {duration}",
   imageEstimateCompressed: "เล็กลงเมื่อบีบอัด",
+  imageRecommendation:
+    "แนะนำ: โหมดเต็มให้สำเนาแบบตรงทุกบิต สำหรับดิสก์ Windows (NTFS) ใช้สมาร์ท + บีบอัด เพื่ออิมเมจที่เล็กและเร็วกว่ามาก",
+  closeDuringJobTitle: "ยังมีงานทำงานอยู่",
+  closeDuringJobBody: "การปิด FlowClone ตอนนี้จะขัดจังหวะการย้ายข้อมูลที่กำลังทำงานอยู่ ต้องการออกหรือไม่",
+  closeAnyway: "ออกเลย",
+  keepRunning: "ทำงานต่อ",
   chooseImageLocation: "เลือกตำแหน่งอิมเมจ",
   chooseDifferentLocation: "เลือกตำแหน่งใหม่",
   createMigrationImage: "สร้างอิมเมจ",

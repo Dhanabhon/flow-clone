@@ -2,7 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
-import { AlertTriangle, FileArchive, HardDrive, RefreshCw, Upload } from "lucide-react";
+import {
+  AlertTriangle,
+  FileArchive,
+  HardDrive,
+  Lightbulb,
+  RefreshCw,
+  Upload,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { DiskCard } from "@/components/flowclone/DiskCard";
@@ -516,7 +523,12 @@ function ImageMigrationPanel({
         />
       </div>
 
-      <div className="mt-4 space-y-3">
+      <div className="mt-4 flex items-start gap-2.5 rounded-input border border-primary/20 bg-primary/5 px-4 py-3 text-left">
+        <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-primary" strokeWidth={2} />
+        <p className="text-xs text-muted">{t("imageRecommendation")}</p>
+      </div>
+
+      <div className="mt-3 space-y-3">
         <div className="flex items-center justify-between gap-4 rounded-input border border-border bg-elevated px-4 py-3">
           <div className="min-w-0 text-left">
             <p className="text-sm font-medium">{t("imageContentLabel")}</p>
