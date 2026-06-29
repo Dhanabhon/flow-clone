@@ -37,7 +37,10 @@ export interface ImageValidation {
   format: string;
   version: number;
   source: DiskInfo;
+  /** Logical size the image restores to (the source disk's capacity). */
   payload_bytes: number;
+  /** Actual `.flowimg` file size on disk — much smaller for used-only/compressed. */
+  file_bytes: number;
   note: string | null;
 }
 

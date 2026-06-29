@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-06-30
+
+### Fixed
+
+- **The completed screen reported the image's full logical size, not the actual
+  file size.** After a Smart/Compress migration it showed the image as the
+  source disk's capacity (e.g. 512 GB) instead of the much smaller `.flowimg`
+  file (e.g. ~18 GB). It now shows the real on-disk file size; the source disk's
+  capacity still appears under SOURCE.
+- **"Total time" and "Average speed" read 0 on the completed screen** for
+  migrations and restores run with elevation (the privileged path that handles
+  Smart/Compress and all restores). The completion event now reports the real
+  elapsed time and average speed.
+
 ## [0.3.4] - 2026-06-30
 
 ### Fixed
@@ -247,7 +261,8 @@ still stubbed.
   disk as target) lives in the Rust core, not the UI.
 - Destructive actions require typed `ERASE` confirmation.
 
-[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.1...v0.3.2

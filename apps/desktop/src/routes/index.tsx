@@ -595,7 +595,16 @@ function CompletedScreen() {
             {!isImageMode ? (
               <DiskSummary label={t("target")} name={target?.model ?? t("target")} size={target?.total_bytes ?? 0} />
             ) : (
-              <DiskSummary label={t("image")} name={imageName} size={source?.total_bytes ?? 0} />
+              <DiskSummary
+                label={t("image")}
+                name={imageName}
+                size={
+                  imageValidation?.file_bytes ||
+                  progress?.bytes_total ||
+                  source?.total_bytes ||
+                  0
+                }
+              />
             )}
           </div>
           <dl className="mt-5 grid grid-cols-3 gap-3 border-t border-border pt-5 text-sm">
@@ -622,7 +631,7 @@ function CompletedScreen() {
                 ? t("imageVerified", {
                     model: imageValidation.source.model,
                     size: formatBytes(
-                      imageValidation.payload_bytes ||
+                      imageValidation.file_bytes ||
                         imageValidation.source.total_bytes
                     ),
                   })

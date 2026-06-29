@@ -54,7 +54,11 @@ pub struct ImageValidation {
     pub format: String,
     pub version: u64,
     pub source: DiskInfo,
+    /// Logical size the image restores to (the source disk's capacity).
     pub payload_bytes: u64,
+    /// Actual size of the `.flowimg` file on disk — much smaller than
+    /// `payload_bytes` for used-only and/or compressed images.
+    pub file_bytes: u64,
     pub note: Option<String>,
 }
 
@@ -362,6 +366,9 @@ fn spawn_elevated_image_copy(
     // Last total-to-store the poller saw, so the runner can report the right
     // denominator on completion (the poller learns it from the file, not the runner).
     let stored_total = Arc::new(AtomicU64::new(0));
+    // Shared start so the runner can report the real total time and average
+    // speed on completion (Instant is Copy — each task gets its own copy).
+    let start = Instant::now();
 
     // Progress poller: read the CLI's progress file (accurate for sparse/zstd).
     let poll_app = app.clone();
@@ -371,7 +378,6 @@ fn spawn_elevated_image_copy(
     let poll_image_path = image_path.clone();
     let poll_stored_total = stored_total.clone();
     tauri::async_runtime::spawn(async move {
-        let start = Instant::now();
         let mut last_bytes = 0u64;
         let mut last_tick = Instant::now();
         let mut speed = 0u64;
@@ -493,6 +499,13 @@ fn spawn_elevated_image_copy(
             0 => fallback_total,
             total => total,
         };
+        // Real total time and average speed (stored bytes / elapsed).
+        let elapsed = start.elapsed().as_secs_f64();
+        let avg_speed = if elapsed > 0.0 {
+            (final_total as f64 / elapsed) as u64
+        } else {
+            0
+        };
 
         match result {
             Ok(Ok(())) => {
@@ -504,9 +517,9 @@ fn spawn_elevated_image_copy(
                         fraction: 1.0,
                         bytes_done: final_total,
                         bytes_total: final_total,
-                        read_speed: 0,
-                        write_speed: 0,
-                        elapsed_secs: 0.0,
+                        read_speed: avg_speed,
+                        write_speed: avg_speed,
+                        elapsed_secs: elapsed,
                         eta_secs: Some(0.0),
                         current_operation: format!("Image workflow ready at {image_path}"),
                     },
@@ -1139,6 +1152,9 @@ fn spawn_elevated_restore(
     let progress_path = restore_progress_path(&image_path);
     let cleanup_job_id = job_id.clone();
     let cleanup_cancel = image_cancel.clone();
+    // Shared start so the runner can report the real total time and average
+    // speed on completion (Instant is Copy — each task gets its own copy).
+    let start = Instant::now();
 
     // Poller: read the CLI's progress file (no growing target file to stat).
     let poll_app = app.clone();
@@ -1146,7 +1162,6 @@ fn spawn_elevated_restore(
     let poll_cancel = cancel.clone();
     let poll_progress_path = progress_path.clone();
     tauri::async_runtime::spawn(async move {
-        let start = Instant::now();
         let mut last_bytes = 0u64;
         let mut last_tick = Instant::now();
         let mut speed = 0u64;
@@ -1241,6 +1256,13 @@ fn spawn_elevated_restore(
         .await;
         run_cancel.store(true, Ordering::SeqCst);
         let _ = std::fs::remove_file(&progress_path);
+        // Real total time and average speed (bytes written / elapsed).
+        let elapsed = start.elapsed().as_secs_f64();
+        let avg_speed = if elapsed > 0.0 {
+            (total as f64 / elapsed) as u64
+        } else {
+            0
+        };
 
         match result {
             Ok(Ok(())) => {
@@ -1252,9 +1274,9 @@ fn spawn_elevated_restore(
                         fraction: 1.0,
                         bytes_done: total,
                         bytes_total: total,
-                        read_speed: 0,
-                        write_speed: 0,
-                        elapsed_secs: 0.0,
+                        read_speed: avg_speed,
+                        write_speed: avg_speed,
+                        elapsed_secs: elapsed,
                         eta_secs: Some(0.0),
                         current_operation: "Restore workflow ready".to_string(),
                     },
@@ -1519,6 +1541,7 @@ fn validate_flow_image_file(mut file: File, image_len: u64) -> Result<ImageValid
         version: header.version,
         source: header.source,
         payload_bytes: header.payload_bytes,
+        file_bytes: image_len,
         note: header.note,
     })
 }
@@ -1595,6 +1618,7 @@ fn validate_flow_image_v2(mut file: File, image_len: u64) -> Result<ImageValidat
         version: header.version,
         source: header.source,
         payload_bytes: header.uncompressed_bytes,
+        file_bytes: image_len,
         note: header.note,
     })
 }
@@ -1619,6 +1643,7 @@ fn validate_stub_image_manifest(contents: &str) -> Result<ImageValidation, Strin
         version: manifest.version,
         source: manifest.source,
         payload_bytes: 0,
+        file_bytes: contents.len() as u64,
         note: manifest.note,
     })
 }
@@ -1767,6 +1792,9 @@ mod tests {
         assert_eq!(validation.format, FLOW_IMAGE_FORMAT);
         // Reports the logical disk size the image restores to.
         assert_eq!(validation.payload_bytes, total);
+        // ...but the actual file is far smaller than that logical size.
+        assert_eq!(validation.file_bytes, bytes.len() as u64);
+        assert!(validation.file_bytes < validation.payload_bytes);
 
         std::fs::remove_file(image_path).expect("remove v2 image");
     }

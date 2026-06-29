@@ -370,6 +370,7 @@ function validateBrowserImageStub(imagePath: string): ImageValidation {
     version: 1,
     source: browserDisks()[0],
     payload_bytes: 0,
+    file_bytes: 0,
     note: "Preview file only. No disk data has been copied.",
   };
 }
