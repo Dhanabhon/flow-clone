@@ -176,7 +176,7 @@ const th: Record<MessageKey, string> = {
   themeToggle: "สลับโหมดมืด",
 
   homeTitle: "ย้ายครบ ไม่สูญหาย",
-  homeSubtitle: "ผู้ช่วยย้ายข้อมูล ใช้งาน เบา เร็ว และปลอดภัย",
+  homeSubtitle: "ผู้ช่วยย้ายข้อมูล — เบา เร็ว และปลอดภัย",
   refreshDisks: "รีเฟรชดิสก์",
   directCloneMode: "Clone โดยตรง",
   comingSoon: "เร็ว ๆ นี้",
