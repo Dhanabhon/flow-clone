@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -17,6 +17,7 @@ import {
   createImageStub,
   generateReportStub,
   isTauriRuntime,
+  notifyJobDone,
   onProgress,
   openFullDiskAccessSettings,
   restoreImageStub,
@@ -151,12 +152,33 @@ function CloningScreen() {
   const isImageMode = mode === "image";
   const isRestoreMode = mode === "restore";
 
+  // Notify once when the job ends. Held in refs so the progress listener never
+  // re-subscribes and never fires twice for the same job.
+  const notifiedRef = useRef(false);
+  const notifyTextRef = useRef({ title: "", done: "", failed: "" });
+  notifyTextRef.current = {
+    title: t("notifyTitle"),
+    done: t(isRestoreMode ? "notifyRestoreDone" : "notifyImageDone"),
+    failed: t(isRestoreMode ? "notifyRestoreFailed" : "notifyImageFailed"),
+  };
+
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
     onProgress((next) => {
       if (!active) return;
       setProgress(next);
+      if (
+        (next.phase === "completed" || next.phase === "failed") &&
+        !notifiedRef.current
+      ) {
+        notifiedRef.current = true;
+        const text = notifyTextRef.current;
+        void notifyJobDone(
+          text.title,
+          next.phase === "completed" ? text.done : text.failed
+        );
+      }
       if (next.phase === "completed") goTo("completed");
     }).then((fn) => {
       if (active) {

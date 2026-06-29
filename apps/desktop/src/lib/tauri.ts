@@ -1,5 +1,10 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { DiskInfo, ImageValidation, Progress } from "./types";
@@ -179,6 +184,24 @@ export const ejectDisk = (devicePath: string): Promise<void> =>
   // Outside Tauri (browser mock), pretend the eject succeeded so the disk-list
   // UI can be exercised in dev.
   isTauriRuntime() ? invoke("eject_disk", { devicePath }) : Promise.resolve();
+
+/**
+ * Post a system notification that a long-running job finished. Best-effort: it
+ * requests permission on first use and never throws into the caller (a failed
+ * notification must not break the migration flow). No-op outside Tauri.
+ */
+export async function notifyJobDone(title: string, body: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      granted = (await requestPermission()) === "granted";
+    }
+    if (granted) sendNotification({ title, body });
+  } catch {
+    // Notifications are a nicety, not a requirement — swallow any error.
+  }
+}
 
 export function openFullDiskAccessSettings(): Promise<void> {
   if (isTauriRuntime()) return invoke("open_full_disk_access_settings");

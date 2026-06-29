@@ -92,6 +92,7 @@ pub fn run() {
         .menu(build_menu)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(engine))
         .manage(image_cancel)
