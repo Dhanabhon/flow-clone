@@ -7,22 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-29
+
 ### Added
 
 - **Image Migration options in the GUI.** A **Smart / Exact** toggle and a
-  **Compress** switch, with a live size/time estimate. Smart stores only used
-  blocks (NTFS, falling back to a full image otherwise); Compress writes a
-  zstd-compressed `.flowimg`. The default is Exact (the proven full-copy path);
-  both are opt-in. A desktop notification already fires when the job finishes.
-- **NTFS used-only imaging (CLI): `create-image --used-only`.** Reads the GPT and
-  each NTFS partition's `$Bitmap` and stores only the allocated blocks — much
-  faster and smaller on a mostly-empty disk (e.g. ~50 GB used on a 256 GB drive).
-  The v2 format carries a `block_map`; restore reconstructs the disk (present
-  blocks from the payload, absent blocks as zeros). Biased to include — GPT,
-  gaps, non-NTFS partitions, and anything that fails to parse are kept whole — and
-  it falls back to a full image whenever the disk isn't GPT/NTFS. Combines with
-  `--compress`. The NTFS parsing and the create→restore round-trip are covered by
-  tests; the GUI does not expose it yet.
+  **Compress** switch, with a live size/time estimate and a recommendation hint.
+  Smart stores only used blocks (NTFS, falling back to a full image otherwise);
+  Compress writes a zstd-compressed `.flowimg`. The default is Exact (the proven
+  full-copy path); both are opt-in.
+- **NTFS used-only imaging: `create-image --used-only`.** Reads the GPT and each
+  NTFS partition's `$Bitmap` and stores only the allocated blocks — much faster
+  and smaller on a mostly-empty disk (e.g. ~50 GB used on a 256 GB drive). The v2
+  format carries a `block_map`; restore reconstructs the disk (present blocks from
+  the payload, absent blocks as zeros). Biased to include — GPT, gaps, non-NTFS
+  partitions, and anything that fails to parse are kept whole — and it falls back
+  to a full image whenever the disk isn't GPT/NTFS. Combines with `--compress`.
+  Covered by NTFS-parsing and create→restore round-trip tests.
+- **Job-done notification.** A desktop notification fires when a migration or
+  restore finishes (success or failure).
+- **Close-while-running confirmation.** Quitting the app during a migration or
+  restore now asks before interrupting the job.
 
 ## [0.2.1] - 2026-06-29
 

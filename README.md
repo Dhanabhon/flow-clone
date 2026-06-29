@@ -44,8 +44,12 @@ still stubbed.
 - Create a full raw image of the source disk. The privileged raw read runs
   through a native macOS admin prompt (or the `flowclone` CLI under `sudo`); the
   source is unmounted for the read and remounted afterward.
+- Choose **Smart** (store only used blocks of an NTFS disk; falls back to a full
+  copy otherwise) or **Exact** (full bit-for-bit copy), and optionally
+  **Compress** the image — with a live size/time estimate.
 - Show live progress, transfer speed, and estimated time; cancel at any time
-  (with a confirmation prompt).
+  (with a confirmation prompt). A desktop notification fires when the job
+  finishes, and closing the app mid-job asks for confirmation.
 - Recover from interruptions: auto-reconnect and resume if the disk drops off
   the bus, skip unreadable blocks (ddrescue-style) so a bad sector doesn't abort
   the whole image, and flag an unfinished image on the next launch after a crash
@@ -127,7 +131,8 @@ Pass `--compress` to `create-image` to write a smaller zstd-compressed `.flowimg
 older uncompressed images. Pass `--used-only` to read and store only the
 allocated blocks of an NTFS disk (much faster and smaller on a mostly-empty
 disk); it falls back to a full image if the disk isn't GPT/NTFS. The two flags
-combine. The GUI does not expose either yet. See `docs/SPARSE_IMAGE.md`.
+combine. The GUI exposes both via the Image Migration **Smart / Exact** toggle
+and **Compress** switch. See `docs/SPARSE_IMAGE.md`.
 
 Do not run the desktop GUI as root.
 
@@ -243,7 +248,7 @@ pnpm tauri build --bundles nsis
 Expected output:
 
 ```text
-target\release\bundle\nsis\FlowClone_0.2.1_x64-setup.exe
+target\release\bundle\nsis\FlowClone_0.3.0_x64-setup.exe
 ```
 
 If the Windows host is not x64, install the target explicitly and pass it:
