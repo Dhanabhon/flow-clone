@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   They were stored only in the home screen, so the cloning screen built the
   command without them — running it produced a full, uncompressed image. The
   options now live in the shared flow store.
+- `--used-only` now reports a **permission/Full Disk Access** failure directly,
+  instead of the misleading "used-only unavailable; writing a full image" — the
+  full image needs the same access and would fail identically, so it fails fast
+  with a clear message. (Non-permission cases, e.g. a non-NTFS disk, still fall
+  back to a full image.)
 
 ## [0.3.0] - 2026-06-29
 

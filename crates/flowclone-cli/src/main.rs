@@ -1,6 +1,6 @@
 //! Safe CLI for inspecting disks and development-only image creation.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use flowclone_disk::{Connection, DiskCatalogApi, DiskInfo, Health};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -270,6 +270,15 @@ fn create_image() -> Result<()> {
                 create_sparse_image_file(&raw_source, output_path, &source, &map, compression)?;
                 return Ok(());
             }
+            Err(error) if is_permission_error(&error) => {
+                // The map and the full image both have to read the disk, so the
+                // same permission error would just fail again. Surface it clearly
+                // instead of a misleading "writing a full image" fallback.
+                return Err(error.context(
+                    "can't read the source disk for used-only — grant Full Disk Access \
+                     (and run with admin rights)",
+                ));
+            }
             Err(error) => {
                 eprintln!("note:   used-only unavailable ({error}); writing a full image");
             }
@@ -288,12 +297,23 @@ fn create_image() -> Result<()> {
     Ok(())
 }
 
+/// Whether an error chain carries a "permission denied" I/O error. On macOS, raw
+/// disk reads need root *and* Full Disk Access, so this is the usual cause.
+fn is_permission_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+    })
+}
+
 /// Open the raw source read-only and work out which blocks hold real data. Any
 /// failure (not GPT, unknown filesystem, parse error) propagates so the caller
 /// falls back to a full image — used-only never guesses.
 fn try_used_block_map(raw_source: &str, total_bytes: u64) -> Result<BlockMap> {
-    let mut reader = File::open(raw_source)
-        .map_err(|error| anyhow::anyhow!("open source {raw_source}: {error}"))?;
+    // `with_context` (not `anyhow!`) so the underlying io::Error survives in the
+    // chain and the caller can tell a permission error from a parse one.
+    let mut reader = File::open(raw_source).with_context(|| format!("open source {raw_source}"))?;
     let sector_size = used_blocks::detect_sector_size(&mut reader)?;
     used_blocks::compute_used_block_map(
         &mut reader,
@@ -1518,6 +1538,18 @@ mod tests {
         assert!(!too_damaged(MAX_BAD_REGION_BYTES, MAX_BAD_REGIONS));
         assert!(too_damaged(MAX_BAD_REGION_BYTES + 1, 1));
         assert!(too_damaged(0, MAX_BAD_REGIONS + 1));
+    }
+
+    #[test]
+    fn is_permission_error_detects_eperm_in_the_chain() {
+        let denied =
+            anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                .context("open source /dev/rdisk4");
+        assert!(is_permission_error(&denied));
+
+        // A non-permission failure (e.g. not a GPT disk) must not match, so it
+        // can still fall back to a full image.
+        assert!(!is_permission_error(&anyhow::anyhow!("not a GPT disk")));
     }
 
     fn external_target(total_bytes: u64) -> DiskInfo {
