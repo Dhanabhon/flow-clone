@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sparse `.flowimg` foundation (CLI).** The v2 format gains a `used-only` mode
+  carrying a `block_map` of present-block runs, and restore reconstructs the disk
+  from it (present blocks from the payload, absent blocks as zeros). This is the
+  format/restore half of sparse imaging; the filesystem-aware producer that
+  fills the map (NTFS `$Bitmap`) lands next, so `--used-only` still writes a full
+  image for now. Round-trip tests cover compressed and uncompressed sparse
+  images.
+
 ## [0.2.1] - 2026-06-29
 
 ### Fixed

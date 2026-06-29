@@ -57,6 +57,89 @@ impl Compression {
     }
 }
 
+/// Which blocks a sparse (used-only) image actually stores, as ascending,
+/// non-overlapping `[start_block, count]` runs. Blocks not covered by a run are
+/// absent from the payload and restored as zeros.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct BlockMap {
+    runs: Vec<[u64; 2]>,
+}
+
+impl BlockMap {
+    /// Validate the runs for a disk of `total_blocks` blocks: each run is
+    /// non-empty, in range, ascending, and non-overlapping. A bad map could make
+    /// restore write blocks to the wrong place, so this is checked before use.
+    fn validate(&self, total_blocks: u64) -> Result<()> {
+        let mut next = 0u64;
+        for &[start, count] in &self.runs {
+            if count == 0 {
+                anyhow::bail!("block map has an empty run");
+            }
+            if start < next {
+                anyhow::bail!("block map runs must be ascending and non-overlapping");
+            }
+            let end = start
+                .checked_add(count)
+                .ok_or_else(|| anyhow::anyhow!("block map run overflows"))?;
+            if end > total_blocks {
+                anyhow::bail!("block map run {start}+{count} exceeds {total_blocks} blocks");
+            }
+            next = end;
+        }
+        Ok(())
+    }
+
+    /// Uncompressed bytes the present blocks occupy, given the block size and the
+    /// image's logical size (the final block of the disk may be partial).
+    fn present_bytes(&self, block_size: u64, total_bytes: u64) -> u64 {
+        let total_blocks = total_bytes.div_ceil(block_size);
+        let last_block = total_blocks.saturating_sub(1);
+        let last_len = total_bytes - last_block * block_size;
+        let mut bytes = 0u64;
+        for &[start, count] in &self.runs {
+            bytes += count * block_size;
+            if last_block >= start && last_block < start + count {
+                bytes -= block_size - last_len;
+            }
+        }
+        bytes
+    }
+}
+
+/// Answers `is_present` for monotonically increasing block indices by walking the
+/// ascending block-map runs once. A `None` map means every block is present (a
+/// full image).
+struct PresentCursor<'a> {
+    runs: Option<&'a [[u64; 2]]>,
+    run: usize,
+}
+
+impl<'a> PresentCursor<'a> {
+    fn new(map: Option<&'a BlockMap>) -> Self {
+        Self {
+            runs: map.map(|map| map.runs.as_slice()),
+            run: 0,
+        }
+    }
+
+    fn is_present(&mut self, block: u64) -> bool {
+        let Some(runs) = self.runs else {
+            return true;
+        };
+        while self.run < runs.len() {
+            let [start, count] = runs[self.run];
+            if block < start {
+                return false;
+            }
+            if block < start + count {
+                return true;
+            }
+            self.run += 1;
+        }
+        false
+    }
+}
+
 /// Reject image headers larger than this — guards against a corrupt length field.
 const MAX_IMAGE_HEADER_BYTES: u64 = 1024 * 1024;
 /// macOS errno for "Inappropriate ioctl for device" — fsync on an unbuffered
@@ -281,12 +364,15 @@ fn remount_disk(device_path: &str) {
 
 /// Image header fields needed to restore (parsed from a `.flowimg`).
 struct ImageInfo {
-    /// Logical bytes written to the target (the decompressed payload size).
+    /// Logical size written to the target (the full disk size, incl. absent
+    /// blocks restored as zeros).
     write_bytes: u64,
     /// File offset where the (possibly compressed) payload begins.
     data_offset: u64,
     /// Codec of the payload between `data_offset` and EOF.
     compression: Compression,
+    /// Present-block runs for a sparse (used-only) image; `None` = full image.
+    block_map: Option<BlockMap>,
     source: DiskInfo,
 }
 
@@ -303,9 +389,12 @@ struct FlowImageHeaderV2Owned {
     format: String,
     version: u64,
     source: DiskInfo,
+    block_size: u64,
     uncompressed_bytes: u64,
     compression: String,
     mode: String,
+    #[serde(default)]
+    block_map: Option<BlockMap>,
 }
 
 /// Restore a `.flowimg` onto a target disk. **Destructive** — overwrites it.
@@ -436,6 +525,7 @@ fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
             write_bytes: parsed.payload_bytes,
             data_offset,
             compression: Compression::None,
+            block_map: None,
             source: parsed.source,
         });
     }
@@ -448,27 +538,50 @@ fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
     if parsed.version != FLOW_IMAGE_VERSION_V2 {
         anyhow::bail!("unsupported image version: {}", parsed.version);
     }
-    // Phase 1 only writes (and restores) full images; used-only lands with the
-    // block-map parser in a later phase.
-    if parsed.mode != "full" {
-        anyhow::bail!("unsupported image mode: {}", parsed.mode);
+    if parsed.block_size != IMAGE_BLOCK_SIZE as u64 {
+        anyhow::bail!("unsupported image block size: {}", parsed.block_size);
     }
     let compression = Compression::parse(&parsed.compression)?;
     if parsed.uncompressed_bytes == 0 || parsed.uncompressed_bytes != parsed.source.total_bytes {
         anyhow::bail!("invalid image payload size");
     }
+    let total_blocks = parsed.uncompressed_bytes.div_ceil(IMAGE_BLOCK_SIZE as u64);
+
+    // A full image stores every block and carries no map; a used-only image must
+    // carry a valid one. Reject any inconsistency rather than guess.
+    let block_map = match parsed.mode.as_str() {
+        "full" => {
+            if parsed.block_map.is_some() {
+                anyhow::bail!("full image must not carry a block map");
+            }
+            None
+        }
+        "used-only" => {
+            let map = parsed
+                .block_map
+                .ok_or_else(|| anyhow::anyhow!("used-only image is missing its block map"))?;
+            map.validate(total_blocks)?;
+            Some(map)
+        }
+        other => anyhow::bail!("unsupported image mode: {other}"),
+    };
+
     match compression {
-        // Uncompressed: the stored size equals the logical size, so check it
-        // against truncation.
+        // Uncompressed: the stored size equals the present blocks' size, so check
+        // it against truncation.
         Compression::None => {
-            let expected = data_offset + parsed.uncompressed_bytes;
+            let payload_len = match &block_map {
+                None => parsed.uncompressed_bytes,
+                Some(map) => map.present_bytes(IMAGE_BLOCK_SIZE as u64, parsed.uncompressed_bytes),
+            };
+            let expected = data_offset + payload_len;
             if file_len != expected {
                 anyhow::bail!("image size mismatch: expected {expected} bytes, found {file_len}");
             }
         }
         // Compressed: the stored size varies and can't be predicted. A truncated
         // stream is caught at restore time — the decoder yields fewer than
-        // uncompressed_bytes and the read fails.
+        // expected and the read fails.
         Compression::Zstd => {
             if file_len <= data_offset {
                 anyhow::bail!("image has no payload");
@@ -479,6 +592,7 @@ fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
         write_bytes: parsed.uncompressed_bytes,
         data_offset,
         compression,
+        block_map,
         source: parsed.source,
     })
 }
@@ -521,35 +635,47 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
     // be smaller than the target's (e.g. a 512e image onto a 4Kn disk).
     let sector = write_alignment(raw_target);
 
+    // Write the whole disk block by block: a present block comes from the
+    // payload, an absent (used-only) block is written as zeros so the target
+    // matches the source. A `None` map means every block is present (full image).
+    let block_size = IMAGE_BLOCK_SIZE as u64;
+    let total_blocks = info.write_bytes.div_ceil(block_size);
+    let mut cursor = PresentCursor::new(info.block_map.as_ref());
+
     let start = Instant::now();
     let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
     let mut bytes_done = 0u64;
     let mut last_print = Instant::now();
 
-    while bytes_done < info.write_bytes {
+    for block_idx in 0..total_blocks {
         if std::path::Path::new(&cancel_path).exists() {
             let _ = std::fs::remove_file(&cancel_path);
             anyhow::bail!("cancelled by user");
         }
-        let remaining = (info.write_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
-        payload.read_exact(&mut buf[..remaining]).map_err(|error| {
-            anyhow::anyhow!("read image at payload offset {bytes_done}: {error}")
-        })?;
+        let offset = block_idx * block_size;
+        let len = (info.write_bytes - offset).min(block_size) as usize;
+        if cursor.is_present(block_idx) {
+            payload.read_exact(&mut buf[..len]).map_err(|error| {
+                anyhow::anyhow!("read image at payload offset {offset}: {error}")
+            })?;
+        } else {
+            buf[..len].fill(0);
+        }
         // Pad the final block up to a whole sector with zeros so the raw write is
         // sector-aligned. The padding lands in slack past the image's end (the
         // target is >= the payload and a whole number of sectors), so it's safe.
-        let write_len = round_up(remaining, sector);
-        if write_len > remaining {
-            buf[remaining..write_len].fill(0);
+        let write_len = round_up(len, sector);
+        if write_len > len {
+            buf[len..write_len].fill(0);
         }
         target.write_all(&buf[..write_len]).map_err(|error| {
             anyhow::anyhow!(
                 "write target {raw_target} at offset {} ({}): {error}",
-                bytes_done,
-                humansize(bytes_done)
+                offset,
+                humansize(offset)
             )
         })?;
-        bytes_done += remaining as u64;
+        bytes_done = offset + len as u64;
 
         if last_print.elapsed().as_secs() >= 1 || bytes_done == info.write_bytes {
             eprintln!(
@@ -696,14 +822,16 @@ struct FlowImageHeaderV2<'a> {
     format: &'a str,
     version: u64,
     source: &'a DiskInfo,
-    /// Block granularity of the (future) block map; informational in Phase 1.
+    /// Block granularity the block map's indices count in.
     block_size: u64,
-    /// Logical payload size — what restore writes to the target. Full mode keeps
-    /// this equal to the source capacity.
+    /// Logical size restore writes to the target (the full disk). Present blocks
+    /// come from the payload; absent blocks are zeros.
     uncompressed_bytes: u64,
     compression: &'a str,
-    /// "full" today; "used-only" arrives with the block-map parser.
+    /// "full" (no map) or "used-only" (sparse, with a `block_map`).
     mode: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_map: Option<&'a BlockMap>,
     note: &'a str,
 }
 
@@ -745,7 +873,7 @@ fn create_compressed_image_file(
     let mut image = File::create(&partial_path)
         .map_err(|error| anyhow::anyhow!("create image {partial_path}: {error}"))?;
     // The header is written uncompressed; only the payload goes through zstd.
-    write_flow_image_header_v2(&mut image, source, Compression::Zstd)?;
+    write_flow_image_header_v2(&mut image, source, Compression::Zstd, None)?;
     let mut encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
         .map_err(|error| anyhow::anyhow!("init compressor: {error}"))?;
 
@@ -958,8 +1086,9 @@ fn write_flow_image_header_v2(
     writer: &mut impl Write,
     source: &DiskInfo,
     compression: Compression,
+    block_map: Option<&BlockMap>,
 ) -> Result<()> {
-    let header = flow_image_header_v2(source, compression)?;
+    let header = flow_image_header_v2(source, compression, block_map)?;
 
     writer.write_all(FLOW_IMAGE_MAGIC_V2)?;
     writer.write_all(&(header.len() as u64).to_le_bytes())?;
@@ -967,7 +1096,11 @@ fn write_flow_image_header_v2(
     Ok(())
 }
 
-fn flow_image_header_v2(source: &DiskInfo, compression: Compression) -> Result<Vec<u8>> {
+fn flow_image_header_v2(
+    source: &DiskInfo,
+    compression: Compression,
+    block_map: Option<&BlockMap>,
+) -> Result<Vec<u8>> {
     serde_json::to_vec(&FlowImageHeaderV2 {
         format: FLOW_IMAGE_FORMAT,
         version: FLOW_IMAGE_VERSION_V2,
@@ -975,8 +1108,13 @@ fn flow_image_header_v2(source: &DiskInfo, compression: Compression) -> Result<V
         block_size: IMAGE_BLOCK_SIZE as u64,
         uncompressed_bytes: source.total_bytes,
         compression: compression.as_str(),
-        mode: "full",
-        note: "Full-disk payload follows this header.",
+        mode: if block_map.is_some() {
+            "used-only"
+        } else {
+            "full"
+        },
+        block_map,
+        note: "Disk payload follows this header.",
     })
     .map_err(Into::into)
 }
@@ -1300,7 +1438,7 @@ mod tests {
         source.model = "Test SSD V2".into();
         source.total_bytes = payload.len() as u64;
         let mut file = File::create(path).expect("create v2 test image");
-        write_flow_image_header_v2(&mut file, &source, compression).expect("write v2 header");
+        write_flow_image_header_v2(&mut file, &source, compression, None).expect("write v2 header");
         match compression {
             Compression::None => file.write_all(payload).expect("write payload"),
             Compression::Zstd => {
@@ -1397,6 +1535,129 @@ mod tests {
         std::fs::remove_file(source_path).ok();
         std::fs::remove_file(image_path).ok();
         std::fs::remove_file(target_path).ok();
+    }
+
+    #[test]
+    fn block_map_validate_rejects_bad_runs() {
+        // Ascending, in range, non-overlapping.
+        assert!(BlockMap {
+            runs: vec![[0, 2], [3, 1]]
+        }
+        .validate(4)
+        .is_ok());
+        // Empty run.
+        assert!(BlockMap { runs: vec![[0, 0]] }.validate(4).is_err());
+        // Past the end of the disk.
+        assert!(BlockMap { runs: vec![[3, 2]] }.validate(4).is_err());
+        // Overlapping / not ascending.
+        assert!(BlockMap {
+            runs: vec![[0, 2], [1, 1]]
+        }
+        .validate(4)
+        .is_err());
+    }
+
+    #[test]
+    fn block_map_present_bytes_accounts_for_a_partial_last_block() {
+        let bs = IMAGE_BLOCK_SIZE as u64;
+        let total = 2 * bs + 1000; // 3 blocks; the last is 1000 bytes.
+        let map = BlockMap {
+            runs: vec![[0, 1], [2, 1]],
+        };
+        assert_eq!(map.present_bytes(bs, total), bs + 1000);
+    }
+
+    /// Writes a sparse v2 image: header with the block map, then only the present
+    /// blocks (sliced from `full`), optionally zstd-compressed.
+    fn write_sparse_test_image(
+        path: &str,
+        full: &[u8],
+        runs: &[[u64; 2]],
+        compression: Compression,
+    ) {
+        let bs = IMAGE_BLOCK_SIZE;
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.total_bytes = full.len() as u64;
+        let map = BlockMap {
+            runs: runs.to_vec(),
+        };
+
+        let mut payload = Vec::new();
+        for &[start, count] in runs {
+            for block in start..start + count {
+                let off = block as usize * bs;
+                let end = (off + bs).min(full.len());
+                payload.extend_from_slice(&full[off..end]);
+            }
+        }
+
+        let mut file = File::create(path).expect("create sparse image");
+        write_flow_image_header_v2(&mut file, &source, compression, Some(&map))
+            .expect("write v2 header");
+        match compression {
+            Compression::None => file.write_all(&payload).expect("write payload"),
+            Compression::Zstd => {
+                let mut encoder = zstd::Encoder::new(&mut file, ZSTD_LEVEL).expect("encoder");
+                encoder.write_all(&payload).expect("compress payload");
+                encoder.finish().expect("finish encoder");
+            }
+        }
+        file.sync_all().expect("flush image");
+    }
+
+    fn sparse_round_trip(compression: Compression, suffix: &str) {
+        let bs = IMAGE_BLOCK_SIZE;
+        // Three blocks: block 0 present (0xAB), block 1 absent (zeros), block 2
+        // present and partial (0xCD, 1000 bytes).
+        let full_len = 2 * bs + 1000;
+        let mut full = vec![0u8; full_len];
+        full[0..bs].fill(0xAB);
+        full[2 * bs..2 * bs + 1000].fill(0xCD);
+        let runs = [[0u64, 1], [2, 1]];
+
+        let dir = std::env::temp_dir();
+        let image_path = dir
+            .join(format!(
+                "flowclone-cli-sparse-{suffix}-{}.flowimg",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
+        let target_path = dir
+            .join(format!(
+                "flowclone-cli-sparse-{suffix}-{}.target",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
+
+        write_sparse_test_image(&image_path, &full, &runs, compression);
+
+        let info = read_flow_image_header(&image_path).expect("read header");
+        assert_eq!(info.write_bytes, full_len as u64);
+        assert!(
+            info.block_map.is_some(),
+            "sparse image should carry a block map"
+        );
+
+        File::create(&target_path).expect("pre-create target");
+        write_image_to_target(&image_path, &target_path, &info).expect("restore");
+
+        let written = std::fs::read(&target_path).expect("read target");
+        assert_eq!(written, full, "restored sparse image must match the source");
+
+        std::fs::remove_file(image_path).ok();
+        std::fs::remove_file(target_path).ok();
+    }
+
+    #[test]
+    fn restores_a_sparse_image_uncompressed() {
+        sparse_round_trip(Compression::None, "none");
+    }
+
+    #[test]
+    fn restores_a_sparse_image_compressed() {
+        sparse_round_trip(Compression::Zstd, "zstd");
     }
 
     #[test]

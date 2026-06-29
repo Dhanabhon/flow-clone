@@ -1,12 +1,18 @@
 # Sparse Image — Design (`.flowimg` v2)
 
-Status: **Phase 1 implemented (CLI)**; Phases 2–4 not yet started. Read
-`docs/SAFETY.md` first.
+Status: **Phase 1 + Phase 2.1 implemented (CLI)**; Phase 2.2 (NTFS producer),
+Phase 3, Phase 4 not yet started. Read `docs/SAFETY.md` first.
 
-Phase 1 shipped the v2 container + Exact (full) mode + optional zstd compression
-in the `flowclone` CLI (`create-image --compress`), with v1/v2 auto-detection on
-restore and round-trip tests. It does **not** include filesystem parsing
-(used-only) or GUI wiring yet.
+- **Phase 1** — v2 container + Exact (full) mode + optional zstd compression
+  (`create-image --compress`), with v1/v2 auto-detection on restore.
+- **Phase 2.1** — the **block-map format** (`mode: used-only` with a `block_map`
+  of present-block runs) and **sparse-aware restore** (present blocks come from
+  the payload, absent blocks are written as zeros). Validated by round-trip
+  tests, but **nothing produces a sparse image yet** — `create-image
+  --used-only` still falls back to full until the Phase 2.2 producer lands.
+
+It does **not** yet include filesystem parsing (the used-only producer) or GUI
+wiring.
 
 ## Why
 
@@ -51,21 +57,20 @@ payload  : concatenated present blocks, in ascending block index order,
 
 `FlowImageHeaderV2` (superset of v1):
 
+As implemented (Phase 2.1):
+
 ```jsonc
 {
   "format": "flowclone-image",
   "version": 2,
-  "source": { "model": "...", "serial": "...", "capacity_bytes": 256060514304 },
+  "source": { "model": "...", "total_bytes": 256060514304, ... },
   "block_size": 4194304,          // 4 MiB, multiple of 4096 (sector-aligned)
-  "total_blocks": 61035,          // ceil(capacity / block_size)
-  "mode": "used-only" | "full",
+  "uncompressed_bytes": 256060514304, // full disk size restore writes
   "compression": "none" | "zstd",
-  "block_map": {                  // which blocks are present in the payload
-    "encoding": "rle",            // run-length: [start, count] pairs of present runs
-    "runs": [[0, 12], [40, 3], ...],
-    "present_blocks": 8123
-  },
-  "payload_bytes": 34072936448,   // sum of stored (post-compression) block bytes
+  "mode": "full" | "used-only",
+  // present only when mode == "used-only": ascending, non-overlapping
+  // [start_block, count] runs of the blocks stored in the payload.
+  "block_map": { "runs": [[0, 12], [40, 3]] },
   "note": "..."
 }
 ```
@@ -132,8 +137,15 @@ target must be ≥ source.capacity_bytes (same rule as v1).
    uses a single zstd stream over the full payload (no per-block map yet); the
    block-map JSON arrives with Phase 2 as an optional, defaulted header field so
    the version stays 2.
-2. **NTFS used-only** — `$Bitmap` parser → block map; Smart picks it, falls back
-   to full. Round-trip + restore tests on a synthetic NTFS image.
+2. **Used-only — split in two:**
+   - **2.1 block-map format + sparse restore** — ✅ **done (CLI).** `mode:
+     used-only` with a validated `block_map`; restore writes present blocks from
+     the payload and zeros for absent blocks. Round-trip tests (compressed and
+     uncompressed sparse) plus block-map validation. No producer yet, so
+     `--used-only` still falls back to full.
+   - **2.2 NTFS producer** — `$Bitmap` parser → block map; `--used-only` (Smart)
+     uses it and falls back to full on unknown filesystems. Round-trip + restore
+     tests on a synthetic NTFS image. **Not started.**
 3. **APFS used-only** — APFS space manager → block map; extend Smart.
 4. **UI** — Smart/Exact toggle, Compress checkbox, size/time estimate, wired to
    the new CLI flags.
