@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-06-29
+
+### Fixed
+
+- **Used-only / compressed images could not be restored or verified** — they
+  failed with "stream did not contain valid UTF-8". The desktop image validator
+  only understood the v1 format, so any v2 image (`--used-only` and/or
+  `--compress`) fell through to reading the whole binary file as text. Because
+  **restore runs the same validator as a pre-flight check, Smart/Compress images
+  could not be restored from the GUI at all** — it errored before the CLI ran.
+  The validator now understands v2 (header, mode/block-map consistency,
+  compression); the CLI restore engine already handled v2.
+- **Accurate progress for Smart/Compress images.** The cloning screen showed a
+  stuck low percentage, a ~60-minute ETA, and a 256 GB image size for a used-only
+  job that actually stores ~51 GB. The GUI estimated progress from the growing
+  `.part` file over the full disk size, which is meaningless when the payload is
+  sparse or zstd-compressed. The CLI now publishes a progress file with the real
+  bytes-stored / total-to-store and the GUI reads it, so percentage, ETA, and the
+  image size reflect the used data.
+- **The progress ring was invisible in light mode** — its track color matched the
+  white card background. It now uses a visible border color in both themes.
+- The desktop app no longer shows the WebView's right-click menu (Reload / Back /
+  Forward); editable fields keep Cut/Copy/Paste.
+
+### Added
+
+- **Live "GB written" readout** under the progress percentage (e.g.
+  "15 GB / 51 GB"), updating in real time.
+- **Image filenames carry the chosen settings** — the suggested `.flowimg` name
+  includes `exact`/`smart` and `zstd` (e.g.
+  `FlowClone-<timestamp>-smart-zstd.flowimg`) so images are distinguishable in
+  Finder. It reflects intent; the header remains the source of truth.
+- **Interruption modal.** If the source disk drops off mid-migration, a centered
+  dialog reports it and FlowClone auto-resumes when the drive returns; if it
+  can't recover, the dialog offers to start over.
+
+### Changed
+
+- **Larger default window** (1200×780, min 1000×680) so the 1100 px max content
+  width designed for the UI is fully usable.
+- **Clearer mode icons.** Image Migration and Restore use a drive with an up /
+  down arrow (read off the disk vs. write onto it); Direct Clone uses a small
+  drive and a larger drive with an arrow between them, suggesting an upgrade to a
+  bigger SSD.
+
 ## [0.3.1] - 2026-06-29
 
 ### Fixed
@@ -165,7 +210,8 @@ still stubbed.
   disk as target) lives in the Rust core, not the UI.
 - Destructive actions require typed `ERASE` confirmation.
 
-[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Dhanabhon/flow-clone/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Dhanabhon/flow-clone/compare/v0.2.0...v0.2.1

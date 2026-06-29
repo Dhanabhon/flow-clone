@@ -4,15 +4,15 @@ import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
-  FileArchive,
-  HardDrive,
+  HardDriveDownload,
+  HardDriveUpload,
   Lightbulb,
   RefreshCw,
-  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { DiskCard } from "@/components/flowclone/DiskCard";
+import { DiskToDiskIcon } from "@/components/flowclone/DiskToDiskIcon";
 import { FlowArrow } from "@/components/flowclone/FlowArrow";
 import { useDisks } from "@/hooks/use-disks";
 import { useFlowStore } from "@/stores/flow-store";
@@ -154,7 +154,7 @@ export function HomeScreen() {
         : null;
 
   async function chooseImageLocation() {
-    const defaultImageName = defaultImageFileName();
+    const defaultImageName = defaultImageFileName(imageUsedOnly, imageCompress);
     const path = isTauriRuntime()
       ? await save({
           defaultPath: defaultImageName,
@@ -226,19 +226,19 @@ export function HomeScreen() {
         <div className="inline-grid grid-cols-3 rounded-button border border-border bg-surface p-1 shadow-soft">
           <ModeButton
             active={mode === "image"}
-            icon={<FileArchive className="h-4 w-4" />}
+            icon={<HardDriveUpload className="h-4 w-4" />}
             label={t("imageMigrationMode")}
             onClick={() => setMode("image")}
           />
           <ModeButton
             active={mode === "restore"}
-            icon={<Upload className="h-4 w-4" />}
+            icon={<HardDriveDownload className="h-4 w-4" />}
             label={t("restoreImageMode")}
             onClick={() => setMode("restore")}
           />
           <ModeButton
             active={mode === "clone"}
-            icon={<HardDrive className="h-4 w-4" />}
+            icon={<DiskToDiskIcon className="h-4 w-7" />}
             label={t("directCloneMode")}
             onClick={() => setMode("clone")}
             disabled
@@ -401,7 +401,7 @@ function isSelectableDisk(disk: DiskInfo) {
   return !disk.is_boot && !disk.read_only && disk.connection !== "internal";
 }
 
-function defaultImageFileName() {
+function defaultImageFileName(usedOnly: boolean, compress: boolean) {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
   const date = [
@@ -414,7 +414,15 @@ function defaultImageFileName() {
     pad(now.getMinutes()),
     pad(now.getSeconds()),
   ].join("-");
-  return `FlowClone-${date}_${time}.flowimg`;
+  // Tag the suggested name with the chosen settings so images are
+  // distinguishable in Finder: smart (used-only) vs exact, plus zstd when
+  // compression is on. This reflects intent — the header is the source of
+  // truth, and smart can still fall back to a full image on non-NTFS disks.
+  const tags = [usedOnly ? "smart" : "exact"];
+  if (compress) {
+    tags.push("zstd");
+  }
+  return `FlowClone-${date}_${time}-${tags.join("-")}.flowimg`;
 }
 
 function ModeButton({

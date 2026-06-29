@@ -62,15 +62,17 @@ Window
 
 Default size
 
-900 × 640
+1200 × 780
 
 Resizable
 
 Minimum:
 
-900 × 620
+1000 × 680
 
 Centered on startup.
+
+Sized so the 1100px max content width is fully usable with side padding.
 
 ⸻
 

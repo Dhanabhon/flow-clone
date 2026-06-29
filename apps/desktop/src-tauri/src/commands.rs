@@ -13,7 +13,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::time::Instant;
@@ -22,6 +22,11 @@ use tauri::{AppHandle, Emitter, State};
 const FLOW_IMAGE_FORMAT: &str = "flowclone-image";
 const FLOW_IMAGE_MAGIC: &[u8] = b"FLOWCLONE_FLOWIMG_V1\n";
 const FLOW_IMAGE_VERSION: u64 = 1;
+// v2 adds used-only (a `block_map`) and zstd compression. Same byte length as v1
+// so a single magic read sniffs the version. The CLI writes v2 for any
+// `--used-only` / `--compress` image; the validator must understand it too.
+const FLOW_IMAGE_MAGIC_V2: &[u8] = b"FLOWCLONE_FLOWIMG_V2\n";
+const FLOW_IMAGE_VERSION_V2: u64 = 2;
 const IMAGE_HEADER_LEN_BYTES: usize = 8;
 const IMAGE_BLOCK_SIZE: usize = 4 * 1024 * 1024;
 const MAX_IMAGE_HEADER_BYTES: u64 = 1024 * 1024;
@@ -59,6 +64,23 @@ struct FlowImageHeader {
     version: u64,
     source: DiskInfo,
     payload_bytes: u64,
+    note: Option<String>,
+}
+
+/// v2 header (used-only and/or zstd). `uncompressed_bytes` is the logical disk
+/// size the image restores to; the on-disk payload is smaller when sparse or
+/// compressed. `block_map` is present iff `mode` is "used-only".
+#[derive(Debug, Deserialize)]
+struct FlowImageHeaderV2 {
+    format: String,
+    version: u64,
+    source: DiskInfo,
+    block_size: u64,
+    uncompressed_bytes: u64,
+    compression: String,
+    mode: String,
+    #[serde(default)]
+    block_map: Option<serde_json::Value>,
     note: Option<String>,
 }
 
@@ -318,19 +340,27 @@ fn spawn_elevated_image_copy(
         Some(image_path.clone()),
     )?;
 
-    let total = source.total_bytes;
-    let header_bytes = image_header_overhead(&source)?;
-    let partial_path = partial_image_path(&image_path);
+    // The full disk size is only a fallback denominator. The CLI publishes the
+    // real total to store (used bytes for used-only) in its progress file, which
+    // is what keeps the bar/ETA accurate for sparse and zstd-compressed images —
+    // the on-disk `.part` size is misleading for both.
+    let fallback_total = source.total_bytes;
+    let progress_path = create_progress_path(&image_path);
     let device_path = source.device_path.clone();
     let cleanup_job_id = job_id.clone();
     let cleanup_cancel = image_cancel.clone();
 
-    // Progress poller: watch the partial file grow while the root copy runs.
+    // Last total-to-store the poller saw, so the runner can report the right
+    // denominator on completion (the poller learns it from the file, not the runner).
+    let stored_total = Arc::new(AtomicU64::new(0));
+
+    // Progress poller: read the CLI's progress file (accurate for sparse/zstd).
     let poll_app = app.clone();
     let poll_job_id = job_id.clone();
     let poll_cancel = cancel.clone();
-    let poll_partial = partial_path.clone();
+    let poll_progress_path = progress_path.clone();
     let poll_image_path = image_path.clone();
+    let poll_stored_total = stored_total.clone();
     tauri::async_runtime::spawn(async move {
         let start = Instant::now();
         let mut last_bytes = 0u64;
@@ -343,14 +373,19 @@ fn spawn_elevated_image_copy(
                 break;
             }
             let elapsed = start.elapsed().as_secs_f64();
-            let progress = match std::fs::metadata(&poll_partial) {
-                Ok(metadata) => {
-                    let bytes_done = metadata.len().saturating_sub(header_bytes).min(total);
+            let progress = match read_progress_pair(&poll_progress_path) {
+                Some((bytes_done, file_total)) => {
+                    let total = if file_total > 0 {
+                        file_total
+                    } else {
+                        fallback_total
+                    };
+                    poll_stored_total.store(total, Ordering::SeqCst);
                     if bytes_done > last_growth_bytes {
                         last_growth_bytes = bytes_done;
                         last_growth_at = Instant::now();
                     }
-                    // Speed/ETA from how fast the partial file grows between ticks.
+                    // Speed/ETA from how fast stored bytes grow between ticks.
                     let interval = last_tick.elapsed().as_secs_f64();
                     if interval >= 0.8 {
                         speed = (bytes_done.saturating_sub(last_bytes) as f64 / interval) as u64;
@@ -362,7 +397,7 @@ fn spawn_elevated_image_copy(
                     } else {
                         (bytes_done as f64 / total as f64).clamp(0.0, 1.0)
                     };
-                    // The file stopped growing: the CLI is recovering from a
+                    // Bytes stopped growing: the CLI is recovering from a
                     // disconnect (cable/power). Surface that instead of a frozen bar.
                     let stalled = bytes_done > 0
                         && bytes_done < total
@@ -393,16 +428,16 @@ fn spawn_elevated_image_copy(
                         },
                     }
                 }
-                // No partial file yet: the CLI is still waiting for the admin
-                // password prompt (or unmounting). Emit a heartbeat so the screen
-                // shows elapsed time and tells the user to approve the prompt,
-                // rather than appearing frozen at "Preparing image".
-                Err(_) => Progress {
+                // No progress file yet: the CLI is still waiting for the admin
+                // password prompt, unmounting, or computing the used-block map.
+                // Emit a heartbeat so the screen shows elapsed time and tells the
+                // user to approve the prompt, rather than appearing frozen.
+                None => Progress {
                     job_id: poll_job_id.clone(),
                     phase: Phase::Cloning,
                     fraction: 0.0,
                     bytes_done: 0,
-                    bytes_total: total,
+                    bytes_total: fallback_total,
                     read_speed: 0,
                     write_speed: 0,
                     elapsed_secs: elapsed,
@@ -420,6 +455,8 @@ fn spawn_elevated_image_copy(
     let run_job_id = job_id.clone();
     let run_cancel = cancel.clone();
     let run_image_path = image_path.clone();
+    let run_progress_path = progress_path.clone();
+    let run_stored_total = stored_total.clone();
     tauri::async_runtime::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let mut args = vec![
@@ -439,6 +476,14 @@ fn spawn_elevated_image_copy(
         })
         .await;
         run_cancel.store(true, Ordering::SeqCst);
+        // The CLI removes its own progress file on success; clean up otherwise.
+        let _ = std::fs::remove_file(&run_progress_path);
+
+        // Report the real stored total on completion, not the full disk size.
+        let final_total = match run_stored_total.load(Ordering::SeqCst) {
+            0 => fallback_total,
+            total => total,
+        };
 
         match result {
             Ok(Ok(())) => {
@@ -448,8 +493,8 @@ fn spawn_elevated_image_copy(
                         job_id: run_job_id,
                         phase: Phase::Completed,
                         fraction: 1.0,
-                        bytes_done: total,
-                        bytes_total: total,
+                        bytes_done: final_total,
+                        bytes_total: final_total,
                         read_speed: 0,
                         write_speed: 0,
                         elapsed_secs: 0.0,
@@ -461,13 +506,13 @@ fn spawn_elevated_image_copy(
             Ok(Err(error)) => {
                 let _ = run_app.emit(
                     "clone://progress",
-                    failed_progress(run_job_id, total, error),
+                    failed_progress(run_job_id, final_total, error),
                 );
             }
             Err(error) => {
                 let _ = run_app.emit(
                     "clone://progress",
-                    failed_progress(run_job_id, total, error.to_string()),
+                    failed_progress(run_job_id, final_total, error.to_string()),
                 );
             }
         }
@@ -476,12 +521,6 @@ fn spawn_elevated_image_copy(
     });
 
     Ok(job_id)
-}
-
-/// Bytes the `.flowimg` header occupies before the raw payload begins.
-fn image_header_overhead(source: &DiskInfo) -> Result<u64, String> {
-    let header_len = flow_image_header(source)?.len() as u64;
-    Ok(FLOW_IMAGE_MAGIC.len() as u64 + IMAGE_HEADER_LEN_BYTES as u64 + header_len)
 }
 
 /// Locate the `flowclone` CLI binary that performs the privileged raw read.
@@ -1028,8 +1067,16 @@ fn restore_progress_path(image_path: &str) -> String {
     format!("{image_path}.restore-progress")
 }
 
-/// Read "<bytes_done> <total>" the elevated restore publishes.
-fn read_restore_progress(path: &str) -> Option<(u64, u64)> {
+/// File the elevated create-image copy publishes "<bytes_done> <total_to_store>"
+/// to. Mirrors the CLI's `create_progress_path`. `total_to_store` is the used
+/// bytes for a used-only image, so the bar/ETA stay accurate for sparse and
+/// zstd-compressed images (the on-disk `.part` size is misleading for both).
+fn create_progress_path(image_path: &str) -> String {
+    format!("{image_path}.create-progress")
+}
+
+/// Read "<bytes_done> <total>" that an elevated copy publishes (restore or create).
+fn read_progress_pair(path: &str) -> Option<(u64, u64)> {
     let contents = std::fs::read_to_string(path).ok()?;
     let mut parts = contents.split_whitespace();
     let done = parts.next()?.parse::<u64>().ok()?;
@@ -1076,7 +1123,7 @@ fn spawn_elevated_restore(
                 break;
             }
             let elapsed = start.elapsed().as_secs_f64();
-            let progress = match read_restore_progress(&poll_progress_path) {
+            let progress = match read_progress_pair(&poll_progress_path) {
                 Some((bytes_done, file_total)) => {
                     let total = if file_total > 0 { file_total } else { total };
                     if bytes_done > last_growth_bytes {
@@ -1378,8 +1425,13 @@ fn validate_image_path(image_path: &str) -> Result<ImageValidation, String> {
         .read(&mut magic)
         .map_err(|error| format!("failed to read image file: {error}"))?;
 
-    if read == FLOW_IMAGE_MAGIC.len() && magic == FLOW_IMAGE_MAGIC {
-        return validate_flow_image_file(file, image_len);
+    if read == FLOW_IMAGE_MAGIC.len() {
+        if magic == FLOW_IMAGE_MAGIC {
+            return validate_flow_image_file(file, image_len);
+        }
+        if magic == FLOW_IMAGE_MAGIC_V2 {
+            return validate_flow_image_v2(file, image_len);
+        }
     }
 
     let contents = std::fs::read_to_string(image_path)
@@ -1433,6 +1485,82 @@ fn validate_flow_image_file(mut file: File, image_len: u64) -> Result<ImageValid
         version: header.version,
         source: header.source,
         payload_bytes: header.payload_bytes,
+        note: header.note,
+    })
+}
+
+/// Validate a v2 image (used-only and/or zstd). The on-disk payload size varies
+/// (sparse and/or compressed), so this checks the header is well-formed and some
+/// payload follows — the strict size / round-trip guard lives in the CLI restore
+/// path (`read_flow_image_header`). `payload_bytes` reports the logical disk size
+/// the image restores to, matching the v1 path's meaning.
+fn validate_flow_image_v2(mut file: File, image_len: u64) -> Result<ImageValidation, String> {
+    let mut len_bytes = [0u8; IMAGE_HEADER_LEN_BYTES];
+    file.read_exact(&mut len_bytes)
+        .map_err(|error| format!("failed to read image header length: {error}"))?;
+    let header_len = u64::from_le_bytes(len_bytes);
+    if header_len == 0 || header_len > MAX_IMAGE_HEADER_BYTES {
+        return Err(format!("invalid image header length: {header_len}"));
+    }
+
+    let mut header = vec![0u8; header_len as usize];
+    file.read_exact(&mut header)
+        .map_err(|error| format!("failed to read image header: {error}"))?;
+    let header: FlowImageHeaderV2 = serde_json::from_slice(&header)
+        .map_err(|error| format!("invalid image header: {error}"))?;
+
+    if header.format != FLOW_IMAGE_FORMAT {
+        return Err(format!("unsupported image format: {}", header.format));
+    }
+    if header.version != FLOW_IMAGE_VERSION_V2 {
+        return Err(format!("unsupported image version: {}", header.version));
+    }
+    if header.block_size != IMAGE_BLOCK_SIZE as u64 {
+        return Err(format!(
+            "unsupported image block size: {}",
+            header.block_size
+        ));
+    }
+    if header.source.device_path.trim().is_empty() {
+        return Err("image source device path is missing".into());
+    }
+    if header.source.total_bytes == 0 || header.uncompressed_bytes == 0 {
+        return Err("image payload capacity is missing".into());
+    }
+    if header.uncompressed_bytes != header.source.total_bytes {
+        return Err("image payload size does not match source capacity".into());
+    }
+    if !matches!(header.compression.as_str(), "none" | "zstd") {
+        return Err(format!(
+            "unsupported image compression: {}",
+            header.compression
+        ));
+    }
+    // A full image stores every block and carries no map; a used-only image must
+    // carry one. Reject inconsistency rather than trust a malformed header.
+    match header.mode.as_str() {
+        "full" if header.block_map.is_some() => {
+            return Err("full image must not carry a block map".into());
+        }
+        "used-only" if header.block_map.is_none() => {
+            return Err("used-only image is missing its block map".into());
+        }
+        "full" | "used-only" => {}
+        other => return Err(format!("unsupported image mode: {other}")),
+    }
+
+    let data_offset = FLOW_IMAGE_MAGIC_V2.len() as u64 + IMAGE_HEADER_LEN_BYTES as u64 + header_len;
+    if image_len <= data_offset {
+        return Err(format!(
+            "image file is truncated: header needs {data_offset} bytes, file is {image_len}"
+        ));
+    }
+
+    Ok(ImageValidation {
+        format: header.format,
+        version: header.version,
+        source: header.source,
+        payload_bytes: header.uncompressed_bytes,
         note: header.note,
     })
 }
@@ -1564,6 +1692,49 @@ mod tests {
 
         std::fs::remove_file(source_path).expect("remove source file");
         std::fs::remove_file(image_path).expect("remove stub image file");
+    }
+
+    #[test]
+    fn validates_v2_used_only_compressed_image() {
+        // A v2 image (used-only + zstd) — the case that previously fell through to
+        // `read_to_string` and failed with "stream did not contain valid UTF-8".
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.model = "External SSD".into();
+        source.total_bytes = 256 * 1024 * 1024 * 1024;
+        let total = source.total_bytes;
+        let source_value = serde_json::to_value(&source).expect("serialize source");
+
+        let header = serde_json::json!({
+            "format": FLOW_IMAGE_FORMAT,
+            "version": FLOW_IMAGE_VERSION_V2,
+            "source": source_value,
+            "block_size": IMAGE_BLOCK_SIZE as u64,
+            "uncompressed_bytes": total,
+            "compression": "zstd",
+            "mode": "used-only",
+            "block_map": { "runs": [[0u64, 1u64], [2u64, 1u64]] },
+            "note": "Disk payload follows this header.",
+        });
+        let header_bytes = serde_json::to_vec(&header).expect("serialize header");
+
+        let mut image_path = std::env::temp_dir();
+        image_path.push(format!("{}.flowimg", stub_id("flowclone-test-v2")));
+        let image_path = image_path.to_string_lossy().to_string();
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(FLOW_IMAGE_MAGIC_V2);
+        bytes.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+        bytes.extend_from_slice(b"stand-in compressed payload"); // non-UTF-8-safe stand-in
+        std::fs::write(&image_path, &bytes).expect("write v2 image");
+
+        let validation = validate_image_path(&image_path).expect("v2 image validates");
+        assert_eq!(validation.version, FLOW_IMAGE_VERSION_V2);
+        assert_eq!(validation.format, FLOW_IMAGE_FORMAT);
+        // Reports the logical disk size the image restores to.
+        assert_eq!(validation.payload_bytes, total);
+
+        std::fs::remove_file(image_path).expect("remove v2 image");
     }
 
     #[test]

@@ -31,6 +31,19 @@ export default function App() {
     document.documentElement.lang = locale;
   }, [locale]);
 
+  // Suppress the WebView's right-click menu (Reload / Back / Forward) so the
+  // desktop app doesn't expose browser chrome. Editable fields keep their menu
+  // so Cut/Copy/Paste still works (e.g. the ERASE confirmation input).
+  useEffect(() => {
+    const onContextMenu = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+      event.preventDefault();
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, []);
+
   // Warn before closing the window while a migration/restore is running, so a
   // stray Cmd-Q doesn't silently interrupt a long job. `t` is read through a ref
   // so the listener is set up once but always speaks the current language.

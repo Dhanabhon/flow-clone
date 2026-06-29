@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FlowClone",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "identifier": "app.flowclone.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "FlowClone - SSD Migration Assistant",
-        "width": 900,
-        "height": 640,
-        "minWidth": 900,
-        "minHeight": 620,
+        "width": 1200,
+        "height": 780,
+        "minWidth": 1000,
+        "minHeight": 680,
         "resizable": true,
         "center": true,
         "fullscreen": false,

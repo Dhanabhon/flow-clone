@@ -238,6 +238,10 @@ function CloningScreen() {
     /dropping off the bus|did not come back|Device not configured|ended early|os error 6|os error 5/i.test(
       shown.current_operation
     );
+  // Transient mid-run disconnect: the CLI is auto-reacquiring the drive. The
+  // backend emits this exact operation string while it retries between reads.
+  const reconnecting =
+    !failed && shown.current_operation === "Interrupted; reconnecting to disk";
   const cliCommand = useMemo(() => {
     if (!source || !imagePath) return "";
     const flags = `${imageUsedOnly ? " --used-only" : ""}${
@@ -341,13 +345,18 @@ function CloningScreen() {
           <div
             className="mx-auto mt-8 grid h-40 w-40 place-items-center rounded-full"
             style={{
-              background: `conic-gradient(rgb(var(--primary)) ${pct}%, rgb(var(--elevated)) ${pct}% 100%)`,
+              background: `conic-gradient(rgb(var(--primary)) ${pct}%, rgb(var(--border)) ${pct}% 100%)`,
             }}
           >
             <div className="grid h-32 w-32 place-items-center rounded-full bg-background text-4xl font-semibold">
               {pct}%
             </div>
           </div>
+        )}
+        {!failed && shown.bytes_total > 0 && (
+          <p className="mt-3 text-sm font-medium tabular-nums text-muted">
+            {formatBytes(shown.bytes_done)} / {formatBytes(shown.bytes_total)}
+          </p>
         )}
         <div className="mt-8 grid grid-cols-[1fr_auto_1fr] items-center gap-4 rounded-input border border-border bg-background p-4">
           <DiskSummary
@@ -357,7 +366,7 @@ function CloningScreen() {
           />
           <ArrowRight className="h-5 w-5 text-primary" />
           {isImageMode ? (
-            <DiskSummary label={t("image")} name={imageName} size={source?.total_bytes ?? 0} />
+            <DiskSummary label={t("image")} name={imageName} size={shown.bytes_total} />
           ) : (
             <DiskSummary label={t("target")} name={target?.model ?? t("target")} size={target?.total_bytes ?? 0} />
           )}
@@ -406,25 +415,6 @@ function CloningScreen() {
           </div>
         )}
 
-        {interrupted && (
-          <div className="mx-auto mt-6 max-w-xl rounded-input border border-warning/30 bg-warning/10 p-4 text-left">
-            <p className="text-sm text-warning">{t("migrationInterruptedHelp")}</p>
-            <Button
-              className="mt-4 w-full gap-2"
-              size="sm"
-              variant="secondary"
-              disabled={isRetrying}
-              onClick={retryImage}
-            >
-              <RefreshCw className={isRetrying ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              {t("tryAgain")}
-            </Button>
-            {recoveryError && (
-              <p className="mt-3 text-sm text-danger">{recoveryError}</p>
-            )}
-          </div>
-        )}
-
         {failed && (
           <Button className="mt-6 w-full max-w-xs" variant="secondary" onClick={reset}>
             {t("back")}
@@ -441,6 +431,65 @@ function CloningScreen() {
           </Button>
         )}
       </section>
+
+      {(reconnecting || interrupted) && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-card border border-border bg-surface p-6 text-center shadow-soft">
+            {interrupted ? (
+              <>
+                <div className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-warning/15 text-warning">
+                  <AlertTriangle className="h-7 w-7" />
+                </div>
+                <h2 className="mt-4 text-xl font-semibold">
+                  {t("migrationInterruptedTitle")}
+                </h2>
+                <p className="mt-2 text-sm text-muted">
+                  {t("migrationInterruptedBody")}
+                </p>
+                <p className="mt-1 text-sm text-muted">
+                  {t("migrationInterruptedHelp")}
+                </p>
+                {recoveryError && (
+                  <p className="mt-3 text-sm text-danger">{recoveryError}</p>
+                )}
+                <div className="mt-6 grid grid-cols-2 gap-3">
+                  <Button variant="secondary" onClick={reset}>
+                    {t("back")}
+                  </Button>
+                  <Button
+                    className="gap-2"
+                    disabled={isRetrying}
+                    onClick={retryImage}
+                  >
+                    <RefreshCw
+                      className={isRetrying ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+                    />
+                    {t("tryAgain")}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-warning/15 text-warning">
+                  <RefreshCw className="h-7 w-7 animate-spin" />
+                </div>
+                <h2 className="mt-4 text-xl font-semibold">
+                  {t("reconnectingTitle")}
+                </h2>
+                <p className="mt-2 text-sm text-muted">{t("reconnectingBody")}</p>
+                <Button
+                  className="mt-6 w-full"
+                  variant="secondary"
+                  disabled={isCancelling}
+                  onClick={cancelImage}
+                >
+                  {t("cancel")}
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

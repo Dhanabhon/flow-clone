@@ -245,9 +245,10 @@ fn create_image() -> Result<()> {
     eprintln!("free:   {}", humansize(space.available_bytes));
     eprintln!("note:   keep the command running until done");
 
-    // Clear any leftover cancel sentinel from a previous run so it doesn't
-    // immediately abort this one.
+    // Clear any leftover cancel sentinel / progress file from a previous run so
+    // they don't immediately abort this one or show a stale bar.
     let _ = std::fs::remove_file(cancel_sentinel_path(output_path));
+    let _ = std::fs::remove_file(create_progress_path(output_path));
 
     // macOS blocks raw reads of blocks backing a *mounted* filesystem (reads
     // return ENXIO / "Device not configured" once they reach a mounted volume),
@@ -268,6 +269,7 @@ fn create_image() -> Result<()> {
                     if compress { " (zstd)" } else { "" }
                 );
                 create_sparse_image_file(&raw_source, output_path, &source, &map, compression)?;
+                let _ = std::fs::remove_file(create_progress_path(output_path));
                 return Ok(());
             }
             Err(error) if is_permission_error(&error) => {
@@ -294,6 +296,7 @@ fn create_image() -> Result<()> {
     } else {
         create_flow_image_file(&raw_source, output_path, &source)?;
     }
+    let _ = std::fs::remove_file(create_progress_path(output_path));
     Ok(())
 }
 
@@ -1028,6 +1031,8 @@ fn copy_present_blocks<W: Write>(
     let block_size = IMAGE_BLOCK_SIZE as u64;
     let total_bytes = source.total_bytes;
     let present_bytes = block_map.present_bytes(block_size, total_bytes);
+    // Publish 0/total up front so the GUI shows the right denominator immediately.
+    write_create_progress(image_path, 0, present_bytes);
 
     let start = Instant::now();
     let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
@@ -1041,6 +1046,7 @@ fn copy_present_blocks<W: Write>(
             if std::path::Path::new(cancel_path).exists() {
                 let _ = std::fs::remove_file(partial_path);
                 let _ = std::fs::remove_file(cancel_path);
+                let _ = std::fs::remove_file(create_progress_path(image_path));
                 anyhow::bail!("cancelled by user");
             }
             let offset = block * block_size;
@@ -1076,6 +1082,7 @@ fn copy_present_blocks<W: Write>(
                     "{}",
                     progress_line(bytes_done, present_bytes, start.elapsed().as_secs_f64())
                 );
+                write_create_progress(image_path, bytes_done, present_bytes);
                 last_print = Instant::now();
             }
         }
@@ -1137,6 +1144,8 @@ fn copy_disk_payload<W: Write>(
     let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
     let mut bytes_done = 0u64;
     let mut last_print = Instant::now();
+    // Publish 0/total up front so the GUI shows the right denominator immediately.
+    write_create_progress(image_path, 0, source.total_bytes);
 
     // Bad regions that stayed unreadable after retries. ddrescue-style: zero-fill
     // and skip them so a single bad block doesn't abort the whole image, and skip
@@ -1149,6 +1158,7 @@ fn copy_disk_payload<W: Write>(
         if std::path::Path::new(cancel_path).exists() {
             let _ = std::fs::remove_file(partial_path);
             let _ = std::fs::remove_file(cancel_path);
+            let _ = std::fs::remove_file(create_progress_path(image_path));
             anyhow::bail!("cancelled by user");
         }
         let remaining = (source.total_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
@@ -1179,6 +1189,7 @@ fn copy_disk_payload<W: Write>(
                             start.elapsed().as_secs_f64()
                         )
                     );
+                    write_create_progress(image_path, bytes_done, source.total_bytes);
                     last_print = Instant::now();
                 }
             }
@@ -1256,6 +1267,24 @@ fn cancel_sentinel_path(image_path: &str) -> String {
 /// File the elevated restore writes "<bytes_done> <total>" to, for the GUI to poll.
 fn restore_progress_path(image_path: &str) -> String {
     format!("{image_path}.restore-progress")
+}
+
+/// File the create-image copy writes "<bytes_done> <total_to_store>" to, for the
+/// GUI to poll. `total_to_store` is the *used* bytes for a used-only image, or
+/// the full disk size otherwise — the meaningful denominator for the progress
+/// bar. The on-disk `.part` size is misleading when the payload is sparse or
+/// zstd-compressed, so the GUI reads this instead of stat-ing the file.
+fn create_progress_path(image_path: &str) -> String {
+    format!("{image_path}.create-progress")
+}
+
+/// Best-effort publish of create progress for the GUI poller. A failed write
+/// only means a slightly stale bar, so it never aborts the copy.
+fn write_create_progress(image_path: &str, bytes_done: u64, total: u64) {
+    let _ = std::fs::write(
+        create_progress_path(image_path),
+        format!("{bytes_done} {total}"),
+    );
 }
 
 /// Whether the accumulated unreadable regions mean the drive is too damaged to
@@ -1925,6 +1954,17 @@ mod tests {
         create_sparse_image_file(&source_path, &image_path, &source, &map, compression)
             .expect("create sparse");
 
+        // The create copy publishes a progress sidecar the GUI polls. Its total
+        // must be the *used* bytes (2 present blocks), not the full disk size —
+        // that's what keeps the bar/ETA accurate for sparse and zstd images.
+        let progress = std::fs::read_to_string(create_progress_path(&image_path))
+            .expect("progress sidecar written");
+        let mut parts = progress.split_whitespace();
+        let done: u64 = parts.next().unwrap().parse().unwrap();
+        let total: u64 = parts.next().unwrap().parse().unwrap();
+        assert_eq!(total, (2 * bs) as u64, "total is used bytes, not full disk");
+        assert_eq!(done, total, "final progress reaches 100%");
+
         let info = read_flow_image_header(&image_path).expect("read header");
         assert!(info.block_map.is_some());
 
@@ -1937,6 +1977,7 @@ mod tests {
         assert_eq!(std::fs::read(&target_path).expect("read target"), expected);
 
         std::fs::remove_file(source_path).ok();
+        std::fs::remove_file(create_progress_path(&image_path)).ok();
         std::fs::remove_file(image_path).ok();
         std::fs::remove_file(target_path).ok();
     }
