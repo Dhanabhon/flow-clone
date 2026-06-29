@@ -1,5 +1,7 @@
 # FlowClone
 
+[![Version](https://img.shields.io/github/v/release/Dhanabhon/flow-clone?label=version&sort=semver)](https://github.com/Dhanabhon/flow-clone/releases/latest)
+
 Move everything. Lose nothing.
 
 FlowClone is a modern, open-source SSD migration assistant for macOS and Windows
@@ -248,7 +250,7 @@ pnpm tauri build --bundles nsis
 Expected output:
 
 ```text
-target\release\bundle\nsis\FlowClone_0.3.2_x64-setup.exe
+target\release\bundle\nsis\FlowClone_0.3.3_x64-setup.exe
 ```
 
 If the Windows host is not x64, install the target explicitly and pass it:

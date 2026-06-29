@@ -121,7 +121,9 @@ const en = {
     "Writing the image to the target disk. Keep the disk connected until this finishes.",
   diskAccessRequiredTitle: "Disk Access Required",
   diskAccessRequiredBody:
-    "macOS blocked raw disk access. Open Full Disk Access, allow your dev terminal or packaged FlowClone app, then check again.",
+    "macOS needs Full Disk Access to read this disk. Grant it to FlowClone, then quit and reopen the app.",
+  diskAccessHelp:
+    "Open System Settings → Privacy & Security → Full Disk Access, turn on FlowClone, then quit and reopen the app and try again.",
   diskAccessDevHelp:
     "During development, use the copied CLI command from a terminal that has Full Disk Access.",
   imageFailedTitle: "Image Migration Failed",
@@ -308,7 +310,9 @@ const th: Record<MessageKey, string> = {
     "กำลังเขียนอิมเมจลงดิสก์ปลายทาง อย่าถอดดิสก์จนกว่าจะเสร็จ",
   diskAccessRequiredTitle: "ต้องเปิดสิทธิ์เข้าถึงดิสก์",
   diskAccessRequiredBody:
-    "macOS บล็อกการอ่านดิสก์แบบ raw ให้เปิด Full Disk Access แล้วอนุญาต Terminal ที่ใช้ dev หรือแอป FlowClone ที่ package แล้ว จากนั้นกดตรวจสอบอีกครั้ง",
+    "macOS ต้องการสิทธิ์ Full Disk Access เพื่ออ่านดิสก์นี้ ให้เปิดสิทธิ์ให้ FlowClone แล้วปิดและเปิดแอปใหม่",
+  diskAccessHelp:
+    "ไปที่ System Settings → Privacy & Security → Full Disk Access แล้วเปิดสวิตช์ให้ FlowClone จากนั้นปิดและเปิดแอปใหม่ แล้วลองอีกครั้ง",
   diskAccessDevHelp:
     "ระหว่าง development ให้คัดลอกคำสั่ง CLI นี้ไปรันใน Terminal ที่มี Full Disk Access",
   imageFailedTitle: "สร้างอิมเมจไม่สำเร็จ",

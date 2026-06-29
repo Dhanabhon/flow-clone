@@ -82,6 +82,28 @@ Notes:
 5. Approve the admin prompt. Watch progress until it completes; the disk
    remounts when done.
 
+### Restoring onto a brand-new or larger SSD
+
+A new, unformatted SSD is fully supported as a target — it's the safest case,
+since there's no data to lose. Keep these in mind:
+
+- **macOS "disk not readable" pop-up.** When you plug in a brand-new SSD, macOS
+  shows *"The disk you inserted was not readable by this computer."* Click
+  **Ignore** — **not Initialize**. FlowClone reads the raw disk directly, so the
+  drive still appears in the disk list.
+- **The target must be at least as large as the source's full capacity** (a
+  256 GB image needs a target of 256 GB or more), regardless of how little data
+  the image actually stores.
+- **Restoring onto a larger SSD (e.g. 256 GB → 512 GB):** the image recreates the
+  source's exact layout, so the extra space is left **unallocated** — the
+  filesystem does **not** grow automatically. Afterward, expand the partition to
+  use the full disk (macOS **Disk Utility**, `diskutil`, or Windows **Disk
+  Management**).
+- **Same-size drives can differ slightly.** Two "256 GB" SSDs from different
+  brands may not have the exact same byte count. If the target is even slightly
+  smaller than the source, restore is refused with *"target too small"* — choose
+  a target that is equal or larger (when in doubt, size up).
+
 ---
 
 ## 5. Eject a disk

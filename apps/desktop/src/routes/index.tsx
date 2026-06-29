@@ -377,7 +377,7 @@ function CloningScreen() {
           <Metric label={t("elapsed")} value={formatDuration(shown.elapsed_secs)} />
           <Metric label={t("remaining")} value={shown.eta_secs == null ? "..." : formatDuration(shown.eta_secs)} />
         </dl>
-        {!insufficientSpace && (
+        {!insufficientSpace && !(permissionDenied && import.meta.env.PROD) && (
           <p className={failed ? "mt-6 text-sm text-danger" : "mt-6 text-sm text-muted"}>
             {progressOperationText(shown.current_operation, t)}
           </p>
@@ -389,11 +389,19 @@ function CloningScreen() {
 
         {permissionDenied && (
           <div className="mx-auto mt-6 max-w-xl rounded-input border border-warning/30 bg-warning/10 p-4 text-left">
-            <p className="text-sm text-warning">{t("diskAccessDevHelp")}</p>
-            {cliCommand && (
-              <code className="mt-3 block overflow-hidden text-ellipsis whitespace-nowrap rounded-input border border-border bg-background px-3 py-2 text-xs text-muted">
-                {cliCommand}
-              </code>
+            {/* Production users get plain guidance; the copy-a-sudo-CLI-command
+                workaround is for development only. */}
+            {import.meta.env.DEV ? (
+              <>
+                <p className="text-sm text-warning">{t("diskAccessDevHelp")}</p>
+                {cliCommand && (
+                  <code className="mt-3 block overflow-hidden text-ellipsis whitespace-nowrap rounded-input border border-border bg-background px-3 py-2 text-xs text-muted">
+                    {cliCommand}
+                  </code>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-warning">{t("diskAccessHelp")}</p>
             )}
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <Button className="gap-2" size="sm" variant="secondary" onClick={openSettings}>
@@ -404,10 +412,12 @@ function CloningScreen() {
                 <RefreshCw className={isRetrying ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
                 {t("checkAgain")}
               </Button>
-              <Button className="gap-2" size="sm" variant="secondary" disabled={!cliCommand} onClick={copyCliCommand}>
-                <Clipboard className="h-4 w-4" />
-                {copyState === "copied" ? t("cliCommandCopied") : t("copyCliCommand")}
-              </Button>
+              {import.meta.env.DEV && (
+                <Button className="gap-2" size="sm" variant="secondary" disabled={!cliCommand} onClick={copyCliCommand}>
+                  <Clipboard className="h-4 w-4" />
+                  {copyState === "copied" ? t("cliCommandCopied") : t("copyCliCommand")}
+                </Button>
+              )}
             </div>
             {recoveryError && (
               <p className="mt-3 text-sm text-danger">{recoveryError}</p>

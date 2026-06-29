@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-06-29
+
+### Fixed
+
+- **The "Disk Access Required" screen no longer exposes developer details in a
+  packaged app.** Production previously showed the raw error chain (`os error 1`,
+  `/dev/rdiskN`…) and a copy-able `sudo ./target/debug/flowclone …` command meant
+  only for development. Production builds now show plain guidance — grant Full
+  Disk Access to FlowClone, then quit and reopen — with **Open Full Disk Access**
+  and **Check Again** buttons. The developer workaround still appears in
+  `tauri dev`.
+
+### Documentation
+
+- README shows a **version badge** that tracks the latest GitHub release.
+- User guide: added **"Restoring onto a brand-new or larger SSD"** — the macOS
+  "disk not readable" → **Ignore** prompt, the target size requirement, expanding
+  the partition after restoring onto a bigger disk, and slight byte differences
+  between same-nominal-size drives.
+
 ## [0.3.2] - 2026-06-29
 
 ### Fixed
@@ -210,7 +230,8 @@ still stubbed.
   disk as target) lives in the Rust core, not the UI.
 - Destructive actions require typed `ERASE` confirmation.
 
-[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Dhanabhon/flow-clone/compare/v0.2.1...v0.3.0
