@@ -10,6 +10,7 @@
 //! until the producer lands.
 #![allow(dead_code)]
 
+use crate::BlockMap;
 use anyhow::Result;
 use std::io::{Read, Seek, SeekFrom};
 
@@ -367,6 +368,120 @@ pub fn read_ntfs_bitmap<R: Read + Seek>(
     Ok(bitmap)
 }
 
+/// An NTFS volume we fully understand, with its cluster allocation bitmap.
+struct UnderstoodNtfs {
+    /// Disk byte offset of the volume.
+    start: u64,
+    /// Disk byte offset of the volume's end (clusters past here are slack and
+    /// always included).
+    volume_end: u64,
+    cluster_size: u64,
+    /// One bit per cluster, set = allocated.
+    bitmap: Vec<u8>,
+}
+
+/// Whether any bit in `[start, end)` of the allocation bitmap is set. Whole zero
+/// bytes are skipped, so a mostly-free range is cheap to scan.
+fn any_bit_set(bitmap: &[u8], start: u64, end: u64) -> bool {
+    let mut bit = start;
+    while bit < end {
+        let byte_idx = (bit / 8) as usize;
+        if byte_idx >= bitmap.len() {
+            return false;
+        }
+        let byte = bitmap[byte_idx];
+        if byte == 0 {
+            bit = (byte_idx as u64 + 1) * 8; // jump past the empty byte
+            continue;
+        }
+        if byte & (1 << (bit % 8)) != 0 {
+            return true;
+        }
+        bit += 1;
+    }
+    false
+}
+
+/// Whether the block spanning disk bytes `[b_start, b_end)` must be stored. A
+/// block wholly inside an understood NTFS volume is present only if it overlaps
+/// an allocated cluster; everything else (GPT, gaps, non-NTFS partitions, volume
+/// slack, or a block straddling a boundary) is always included.
+fn block_present(b_start: u64, b_end: u64, understood: &[UnderstoodNtfs]) -> bool {
+    for vol in understood {
+        if b_start >= vol.start && b_end <= vol.volume_end {
+            let c_start = (b_start - vol.start) / vol.cluster_size;
+            let c_end = (b_end - vol.start).div_ceil(vol.cluster_size);
+            return any_bit_set(&vol.bitmap, c_start, c_end);
+        }
+    }
+    true
+}
+
+/// Build a whole-disk block map of the regions that must be stored, using NTFS
+/// `$Bitmap`s to skip free space. **Biased to include**: any partition we can't
+/// fully parse is kept whole, so a parsing gap can never drop real data.
+pub fn compute_used_block_map<R: Read + Seek>(
+    reader: &mut R,
+    total_bytes: u64,
+    block_size: u64,
+    sector_size: u64,
+) -> Result<BlockMap> {
+    let partitions = parse_gpt(reader, sector_size)?;
+
+    let mut understood: Vec<UnderstoodNtfs> = Vec::new();
+    for part in &partitions {
+        if !part.is_microsoft_basic_data() {
+            continue; // a non-NTFS partition is kept whole by block_present
+        }
+        let start = part.start_bytes(sector_size);
+        let len = part.len_bytes(sector_size);
+
+        // Any read or parse failure leaves the partition out of `understood`, so
+        // block_present keeps the whole thing.
+        let mut boot_sector = vec![0u8; 512];
+        if reader.seek(SeekFrom::Start(start)).is_err()
+            || reader.read_exact(&mut boot_sector).is_err()
+        {
+            continue;
+        }
+        let boot = match parse_ntfs_boot(&boot_sector) {
+            Ok(boot) => boot,
+            Err(_) => continue,
+        };
+        let volume_bytes = boot.total_sectors * boot.bytes_per_sector;
+        if volume_bytes > len {
+            continue; // BPB claims more than the partition holds — distrust it
+        }
+        let bitmap = match read_ntfs_bitmap(reader, start, &boot) {
+            Ok(bitmap) => bitmap,
+            Err(_) => continue,
+        };
+        understood.push(UnderstoodNtfs {
+            start,
+            volume_end: start + volume_bytes,
+            cluster_size: boot.cluster_size(),
+            bitmap,
+        });
+    }
+
+    let total_blocks = total_bytes.div_ceil(block_size);
+    let mut runs: Vec<[u64; 2]> = Vec::new();
+    let mut run_start: Option<u64> = None;
+    for block in 0..total_blocks {
+        let b_start = block * block_size;
+        let b_end = (b_start + block_size).min(total_bytes);
+        if block_present(b_start, b_end, &understood) {
+            run_start.get_or_insert(block);
+        } else if let Some(start) = run_start.take() {
+            runs.push([start, block - start]);
+        }
+    }
+    if let Some(start) = run_start.take() {
+        runs.push([start, total_blocks - start]);
+    }
+    Ok(BlockMap { runs })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +697,60 @@ mod tests {
         let got =
             read_ntfs_bitmap(&mut Cursor::new(disk), partition_offset, &boot).expect("read bitmap");
         assert_eq!(got, pattern);
+    }
+
+    #[test]
+    fn any_bit_set_finds_bits_and_skips_empty_bytes() {
+        let bitmap = [0x00u8, 0x01, 0x00]; // only cluster 8 (byte 1, bit 0) set
+        assert!(!any_bit_set(&bitmap, 0, 8));
+        assert!(any_bit_set(&bitmap, 8, 9));
+        assert!(any_bit_set(&bitmap, 0, 16));
+        assert!(!any_bit_set(&bitmap, 9, 24));
+        assert!(!any_bit_set(&bitmap, 100, 200)); // past the end
+    }
+
+    #[test]
+    fn compute_used_block_map_skips_free_ntfs_space_and_keeps_everything_else() {
+        let sector = 512usize;
+        let block_size = 4096u64; // 8 clusters per block (cluster = 512 here)
+        let total_bytes = 96 * sector as u64; // 12 blocks
+        let mut disk = vec![0u8; total_bytes as usize];
+
+        // GPT: one Microsoft Basic Data partition at LBA 8..=71.
+        put(&mut disk, sector, GPT_SIGNATURE);
+        put(&mut disk, sector + 72, &2u64.to_le_bytes()); // entries at LBA 2
+        put(&mut disk, sector + 80, &1u32.to_le_bytes()); // 1 entry
+        put(&mut disk, sector + 84, &128u32.to_le_bytes());
+        let e0 = 2 * sector;
+        put(&mut disk, e0, &MICROSOFT_BASIC_DATA_GUID);
+        put(&mut disk, e0 + 32, &8u64.to_le_bytes()); // first LBA
+        put(&mut disk, e0 + 40, &71u64.to_le_bytes()); // last LBA (inclusive)
+
+        // NTFS volume at LBA 8: 64 sectors = 64 clusters (1 sector/cluster).
+        let part = 8 * sector; // disk byte 4096
+        let mut boot = vec![0u8; 512];
+        put(&mut boot, 3, NTFS_OEM_ID);
+        put(&mut boot, 11, &512u16.to_le_bytes());
+        boot[13] = 1;
+        put(&mut boot, 40, &64u64.to_le_bytes()); // total sectors
+        put(&mut boot, 48, &16u64.to_le_bytes()); // $MFT LCN
+        boot[64] = (-10i8) as u8; // 1024-byte MFT records
+        put(&mut disk, part, &boot);
+
+        // $Bitmap (MFT record 6): one run at cluster 40, real size 8 bytes.
+        let rec6 = part + 16 * sector + 6 * 1024;
+        put(&mut disk, rec6, &bitmap_mft_record(40, 8));
+
+        // Allocation bitmap (64 clusters = 8 bytes) at cluster 40. Allocated:
+        // clusters 0..=3 (boot), 16..=29 (MFT), 40 ($Bitmap), 50 (a file).
+        let bitmap = [0x0F, 0x00, 0xFF, 0x3F, 0x00, 0x01, 0x04, 0x00];
+        put(&mut disk, part + 40 * sector, &bitmap);
+
+        let map = compute_used_block_map(&mut Cursor::new(disk), total_bytes, block_size, 512)
+            .expect("block map");
+
+        // Present: block 0 (GPT), 1 (boot), 3+4 (MFT), 6 ($Bitmap), 7 (file),
+        // 9..=11 (slack / backup GPT). Free NTFS blocks 2, 5, 8 are skipped.
+        assert_eq!(map.runs, vec![[0, 2], [3, 2], [6, 2], [9, 3]]);
     }
 }

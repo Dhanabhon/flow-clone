@@ -151,9 +151,14 @@ target must be ≥ source.capacity_bytes (same rule as v1).
      - ✅ Update Sequence Array fixups
      - ✅ data-run decoder (signed offsets, sparse runs)
      - ✅ non-resident `$DATA` extraction from an MFT record
-     - next: read `$MFT` record 6 (`$Bitmap`) from the disk via those runs,
-       turn allocated clusters into whole-disk 4 MiB blocks (bias to include),
-       then wire `create-image --used-only` with full-raw fallback.
+     - ✅ read `$Bitmap` from the disk (`read_ntfs_bitmap`)
+     - ✅ whole-disk block-map assembly (`compute_used_block_map`): per NTFS
+       partition, allocated clusters → present blocks; everything else (GPT,
+       gaps, non-NTFS partitions, volume slack, unparseable partitions) kept
+       whole. Integration-tested on a synthetic GPT+NTFS disk.
+     - next: wire `create-image --used-only` — read only present blocks (the
+       create-time speedup) and write a sparse v2 image, with full-raw fallback;
+       round-trip test (create → restore reproduces the disk byte-for-byte).
 3. **APFS used-only** — APFS space manager → block map; extend Smart.
 4. **UI** — Smart/Exact toggle, Compress checkbox, size/time estimate, wired to
    the new CLI flags.
