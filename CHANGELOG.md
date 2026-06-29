@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-29
+
+### Fixed
+
+- **Eject** now works on USB enclosures that keep their device node after
+  ejecting. It trusts `diskutil`'s success instead of waiting for the disk to
+  disappear (which never happens on those enclosures), force-unmounts a busy
+  volume and retries, and hides the ejected disk from the list so the card
+  actually disappears — no more false "still in use" error.
+
+### Changed
+
+- Tightened the hero tagline and subtitle copy (English and Thai).
+
 ## [0.2.0] - 2026-06-29
 
 ### Added
