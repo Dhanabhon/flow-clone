@@ -311,6 +311,62 @@ pub fn data_attribute_runs(record: &[u8]) -> Result<(Vec<DataRun>, u64)> {
     anyhow::bail!("no non-resident unnamed $DATA attribute found");
 }
 
+/// `$Bitmap` is MFT record 6; the first MFT records are always contiguous from
+/// the `$MFT` LCN, so it can be read directly without walking the MFT's own runs.
+const BITMAP_MFT_RECORD: u64 = 6;
+/// Cap the bitmap we read so a corrupt header can't trigger a huge allocation
+/// (8 MiB covers a 256 GB disk at 4 KiB clusters).
+const MAX_BITMAP_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read the NTFS cluster-allocation `$Bitmap` for the volume at
+/// `partition_offset`. Returns enough bytes to cover every cluster (one bit per
+/// cluster, bit set = allocated).
+pub fn read_ntfs_bitmap<R: Read + Seek>(
+    reader: &mut R,
+    partition_offset: u64,
+    boot: &NtfsBoot,
+) -> Result<Vec<u8>> {
+    let cluster_size = boot.cluster_size();
+    let mft_offset = partition_offset + boot.mft_lcn * cluster_size;
+    let record_offset = mft_offset + BITMAP_MFT_RECORD * boot.mft_record_size;
+
+    let mut record = vec![0u8; boot.mft_record_size as usize];
+    reader.seek(SeekFrom::Start(record_offset))?;
+    reader.read_exact(&mut record)?;
+    apply_fixups(&mut record, boot.bytes_per_sector as usize)?;
+    let (runs, real_size) = data_attribute_runs(&record)?;
+
+    // We only need enough bytes to cover every cluster; ignore any padding the
+    // attribute's real size carries beyond that.
+    let needed = boot.total_clusters().div_ceil(8);
+    if real_size < needed {
+        anyhow::bail!("$Bitmap is smaller than the volume needs");
+    }
+    if needed > MAX_BITMAP_BYTES {
+        anyhow::bail!("$Bitmap implausibly large: {needed} bytes");
+    }
+
+    let mut bitmap = Vec::with_capacity(needed as usize);
+    for run in runs {
+        if bitmap.len() as u64 >= needed {
+            break;
+        }
+        let run_bytes = run
+            .clusters
+            .checked_mul(cluster_size)
+            .ok_or_else(|| anyhow::anyhow!("data run overflows"))?;
+        let to_read = (needed - bitmap.len() as u64).min(run_bytes);
+        reader.seek(SeekFrom::Start(partition_offset + run.lcn * cluster_size))?;
+        let mut buf = vec![0u8; to_read as usize];
+        reader.read_exact(&mut buf)?;
+        bitmap.extend_from_slice(&buf);
+    }
+    if (bitmap.len() as u64) < needed {
+        anyhow::bail!("$Bitmap runs are shorter than the volume needs");
+    }
+    Ok(bitmap)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +533,54 @@ mod tests {
                 clusters: 4
             }]
         );
+    }
+
+    /// A 1024-byte `$Bitmap` MFT record whose non-resident `$DATA` is a single
+    /// run at `bitmap_lcn` of `real_size` bytes, with valid fixups.
+    fn bitmap_mft_record(bitmap_lcn: u8, real_size: u64) -> Vec<u8> {
+        let mut record = vec![0u8; 1024];
+        put(&mut record, 0, b"FILE");
+        put(&mut record, 4, &0x30u16.to_le_bytes()); // USA offset
+        put(&mut record, 6, &3u16.to_le_bytes()); // USN + 2 sectors
+        put(&mut record, 20, &0x38u16.to_le_bytes()); // first attribute
+        let usn = [0xAA, 0xBB];
+        put(&mut record, 0x30, &usn);
+        put(&mut record, 512 - 2, &usn); // sector tails currently hold the USN
+        put(&mut record, 1024 - 2, &usn);
+
+        let a = 0x38usize;
+        put(&mut record, a, &ATTR_DATA.to_le_bytes());
+        let attr_len = 0x48u32;
+        put(&mut record, a + 4, &attr_len.to_le_bytes());
+        record[a + 8] = 1; // non-resident
+        put(&mut record, a + 0x20, &0x40u16.to_le_bytes()); // runs offset
+        put(&mut record, a + 0x30, &real_size.to_le_bytes());
+        // One run: length 1 cluster, offset = bitmap_lcn (1-byte fields).
+        put(&mut record, a + 0x40, &[0x11, 0x01, bitmap_lcn, 0x00]);
+        put(&mut record, a + attr_len as usize, &ATTR_END.to_le_bytes());
+        record
+    }
+
+    #[test]
+    fn read_ntfs_bitmap_follows_runs_to_the_allocation_bitmap() {
+        let partition_offset = 4096u64;
+        let boot = NtfsBoot {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 1,
+            total_sectors: 256, // 256 clusters -> 32-byte bitmap
+            mft_lcn: 16,
+            mft_record_size: 1024,
+        };
+
+        let mut disk = vec![0u8; 24 * 1024];
+        let rec6 = partition_offset + 16 * 512 + 6 * 1024;
+        put(&mut disk, rec6 as usize, &bitmap_mft_record(30, 32));
+        let bitmap_at = partition_offset + 30 * 512;
+        let pattern: Vec<u8> = (0..32u8).collect();
+        put(&mut disk, bitmap_at as usize, &pattern);
+
+        let got =
+            read_ntfs_bitmap(&mut Cursor::new(disk), partition_offset, &boot).expect("read bitmap");
+        assert_eq!(got, pattern);
     }
 }
