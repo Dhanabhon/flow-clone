@@ -166,6 +166,8 @@ pub async fn create_image_stub(
     image_cancel: State<'_, ImageCancelState>,
     source_path: String,
     image_path: String,
+    used_only: bool,
+    compress: bool,
 ) -> Result<String, String> {
     let image_path = image_path.trim().to_string();
     if image_path.is_empty() {
@@ -182,10 +184,18 @@ pub async fn create_image_stub(
     write_pending_marker(&image_path, &source);
 
     let image_cancel = image_cancel.inner().clone();
+    // The in-process copy only writes a full, uncompressed image; used-only and
+    // compress are implemented in the CLI, so any option routes through it.
+    let needs_cli = used_only || compress;
     match File::open(&raw_source_path) {
-        Ok(_) => spawn_inprocess_image_copy(app, image_cancel, source, raw_source_path, image_path),
+        Ok(_) if !needs_cli => {
+            spawn_inprocess_image_copy(app, image_cancel, source, raw_source_path, image_path)
+        }
+        Ok(_) => {
+            spawn_elevated_image_copy(app, image_cancel, source, image_path, used_only, compress)
+        }
         Err(error) if error.kind() == ErrorKind::PermissionDenied => {
-            spawn_elevated_image_copy(app, image_cancel, source, image_path)
+            spawn_elevated_image_copy(app, image_cancel, source, image_path, used_only, compress)
         }
         Err(error) => Err(format!(
             "failed to open source disk {raw_source_path}: {error}"
@@ -295,6 +305,8 @@ fn spawn_elevated_image_copy(
     image_cancel: ImageCancelState,
     source: DiskInfo,
     image_path: String,
+    used_only: bool,
+    compress: bool,
 ) -> Result<String, String> {
     let cli = resolve_cli_binary()?;
     let job_id = stub_id("image");
@@ -410,17 +422,20 @@ fn spawn_elevated_image_copy(
     let run_image_path = image_path.clone();
     tauri::async_runtime::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
-            run_elevated(
-                &cli,
-                &[
-                    "create-image",
-                    "--source",
-                    &device_path,
-                    "--output",
-                    &run_image_path,
-                ],
-                "elevated image creation failed",
-            )
+            let mut args = vec![
+                "create-image",
+                "--source",
+                &device_path,
+                "--output",
+                &run_image_path,
+            ];
+            if used_only {
+                args.push("--used-only");
+            }
+            if compress {
+                args.push("--compress");
+            }
+            run_elevated(&cli, &args, "elevated image creation failed")
         })
         .await;
         run_cancel.store(true, Ordering::SeqCst);

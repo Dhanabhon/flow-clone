@@ -4,6 +4,7 @@ import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
 import { AlertTriangle, FileArchive, HardDrive, RefreshCw, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { DiskCard } from "@/components/flowclone/DiskCard";
 import { FlowArrow } from "@/components/flowclone/FlowArrow";
 import { useDisks } from "@/hooks/use-disks";
@@ -69,6 +70,11 @@ export function HomeScreen() {
       return next.size === prev.size ? prev : next;
     });
   }, [disks]);
+
+  // Image Migration options. Default to an exact full copy (the proven path with
+  // accurate progress); "smart" stores only used blocks (NTFS-aware, CLI).
+  const [imageContent, setImageContent] = useState<"exact" | "smart">("exact");
+  const [compressImage, setCompressImage] = useState(false);
 
   // Surface an image job that was interrupted by a crash or power loss.
   const [pending, setPending] = useState<PendingImage | null>(null);
@@ -172,7 +178,12 @@ export function HomeScreen() {
     try {
       setSource(imageSource);
       setTarget(null);
-      const jobId = await createImageStub(imageSource.device_path, imagePath);
+      const jobId = await createImageStub(
+        imageSource.device_path,
+        imagePath,
+        imageContent === "smart",
+        compressImage
+      );
       beginClone(jobId, "image");
     } catch (err) {
       setProgress(failedImageProgress(imageSource, err));
@@ -317,6 +328,10 @@ export function HomeScreen() {
           canCreate={!!imageSource && !!imagePath}
           imagePath={imagePath}
           source={imageSource}
+          content={imageContent}
+          onContentChange={setImageContent}
+          compress={compressImage}
+          onCompressChange={setCompressImage}
           onChooseLocation={chooseImageLocation}
           onCreate={startImageMigration}
         />
@@ -446,16 +461,29 @@ function ImageMigrationPanel({
   canCreate,
   imagePath,
   source,
+  content,
+  onContentChange,
+  compress,
+  onCompressChange,
   onChooseLocation,
   onCreate,
 }: {
   canCreate: boolean;
   imagePath: string | null;
   source: DiskInfo | null;
+  content: "exact" | "smart";
+  onContentChange: (value: "exact" | "smart") => void;
+  compress: boolean;
+  onCompressChange: (value: boolean) => void;
   onChooseLocation: () => void;
   onCreate: () => void;
 }) {
   const { t } = useI18n();
+
+  const estimateBytes =
+    content === "smart"
+      ? source?.used_bytes ?? source?.total_bytes ?? 0
+      : source?.total_bytes ?? 0;
 
   return (
     <motion.section
@@ -487,11 +515,53 @@ function ImageMigrationPanel({
           emphasized={!!imagePath}
         />
       </div>
+
+      <div className="mt-4 space-y-3">
+        <div className="flex items-center justify-between gap-4 rounded-input border border-border bg-elevated px-4 py-3">
+          <div className="min-w-0 text-left">
+            <p className="text-sm font-medium">{t("imageContentLabel")}</p>
+            <p className="mt-0.5 text-xs text-muted">
+              {content === "smart"
+                ? t("imageContentSmartHint")
+                : t("imageContentExactHint")}
+            </p>
+          </div>
+          <div className="flex shrink-0 rounded-pill bg-surface p-0.5 ring-1 ring-inset ring-border">
+            <SegmentedButton
+              active={content === "exact"}
+              onClick={() => onContentChange("exact")}
+            >
+              {t("imageContentExact")}
+            </SegmentedButton>
+            <SegmentedButton
+              active={content === "smart"}
+              onClick={() => onContentChange("smart")}
+            >
+              {t("imageContentSmart")}
+            </SegmentedButton>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 rounded-input border border-border bg-elevated px-4 py-3">
+          <div className="min-w-0 text-left">
+            <p className="text-sm font-medium">{t("imageCompressLabel")}</p>
+            <p className="mt-0.5 text-xs text-muted">{t("imageCompressHint")}</p>
+          </div>
+          <Switch
+            checked={compress}
+            onCheckedChange={onCompressChange}
+            aria-label={t("imageCompressLabel")}
+          />
+        </div>
+      </div>
+
       {source && (
         <p className="mt-4 text-center text-xs text-muted">
-          {t("imageEstimatedTime", {
-            duration: estimateImageDuration(source.total_bytes),
+          {t("imageEstimate", {
+            size: formatBytes(estimateBytes),
+            duration: formatDuration(estimateBytes / IMAGE_ESTIMATE_BYTES_PER_SEC),
           })}
+          {compress ? ` · ${t("imageEstimateCompressed")}` : ""}
         </p>
       )}
 
@@ -570,8 +640,28 @@ function RestoreImagePanel({
   );
 }
 
-function estimateImageDuration(bytes: number) {
-  return formatDuration(bytes / IMAGE_ESTIMATE_BYTES_PER_SEC);
+function SegmentedButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "rounded-pill px-3 py-1 text-xs font-semibold transition",
+        active ? "bg-primary text-white shadow-soft" : "text-muted hover:text-text"
+      )}
+    >
+      {children}
+    </button>
+  );
 }
 
 function failedImageProgress(source: DiskInfo, err: unknown): Progress {

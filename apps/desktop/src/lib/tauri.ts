@@ -106,12 +106,16 @@ export const startCloneStub = (
 
 export const createImageStub = (
   sourcePath: string,
-  imagePath: string
+  imagePath: string,
+  usedOnly = false,
+  compress = false
 ): Promise<string> =>
   isTauriRuntime()
     ? invoke<string>("create_image_stub", {
         sourcePath,
         imagePath,
+        usedOnly,
+        compress,
       })
     : Promise.resolve(createBrowserImageStub(sourcePath, imagePath));
 

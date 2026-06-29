@@ -1,9 +1,10 @@
 # Sparse Image — Design (`.flowimg` v2)
 
-Status: **Phases 1, 2.1, and 2.2 implemented (CLI)**; Phase 3 (APFS) and Phase 4
-(GUI) not yet started. Read `docs/SAFETY.md` first. `create-image --used-only`
-now writes an NTFS-aware sparse image (reading only allocated blocks), with a
-full-raw fallback whenever the disk isn't GPT/NTFS or anything fails to parse.
+Status: **Phases 1, 2.1, 2.2, and 4 implemented**; Phase 3 (APFS used-only) not
+yet started. Read `docs/SAFETY.md` first. `create-image --used-only` writes an
+NTFS-aware sparse image (reading only allocated blocks), with a full-raw fallback
+whenever the disk isn't GPT/NTFS or anything fails to parse. The GUI now exposes
+this via an Image Migration **Smart / Exact** toggle and a **Compress** switch.
 
 - **Phase 1** — v2 container + Exact (full) mode + optional zstd compression
   (`create-image --compress`), with v1/v2 auto-detection on restore.
@@ -163,10 +164,16 @@ target must be ≥ source.capacity_bytes (same rule as v1).
        present blocks (the create-time speedup), composing with `--compress`. Any
        failure falls back to a full image. Create→restore round-trip tests prove
        present blocks survive and dropped blocks come back as zeros.
-   - **Done for the CLI.** Remaining: APFS (Phase 3) and the GUI toggle (Phase 4).
-3. **APFS used-only** — APFS space manager → block map; extend Smart.
-4. **UI** — Smart/Exact toggle, Compress checkbox, size/time estimate, wired to
-   the new CLI flags.
+   - **Done for the CLI.**
+3. **APFS used-only** — APFS space manager → block map; extend Smart. Not started.
+4. **UI** — ✅ Image Migration now has a **Smart / Exact** toggle, a **Compress**
+   switch, and a live size/time estimate, wired to the CLI flags (`create_image_stub`
+   passes `used_only` / `compress`). Default is **Exact** (the proven path with
+   accurate progress); Smart/Compress are opt-in. **Known limitation:** the
+   elevated path estimates progress from the growing `.part` file vs the full disk
+   size, so for Smart/Compress the bar under-reports and jumps to 100% on
+   completion. Fix (later): have the CLI write a create-progress sidecar (like
+   restore) carrying the real `present_bytes` total, and have the poller read it.
 
 ## Risks / safety
 

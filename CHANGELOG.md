@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image Migration options in the GUI.** A **Smart / Exact** toggle and a
+  **Compress** switch, with a live size/time estimate. Smart stores only used
+  blocks (NTFS, falling back to a full image otherwise); Compress writes a
+  zstd-compressed `.flowimg`. The default is Exact (the proven full-copy path);
+  both are opt-in. A desktop notification already fires when the job finishes.
 - **NTFS used-only imaging (CLI): `create-image --used-only`.** Reads the GPT and
   each NTFS partition's `$Bitmap` and stores only the allocated blocks — much
   faster and smaller on a mostly-empty disk (e.g. ~50 GB used on a 256 GB drive).
