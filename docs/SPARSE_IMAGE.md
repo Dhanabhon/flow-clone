@@ -144,8 +144,10 @@ target must be ≥ source.capacity_bytes (same rule as v1).
      uncompressed sparse) plus block-map validation. No producer yet, so
      `--used-only` still falls back to full.
    - **2.2 NTFS producer** — `$Bitmap` parser → block map; `--used-only` (Smart)
-     uses it and falls back to full on unknown filesystems. Round-trip + restore
-     tests on a synthetic NTFS image. **Not started.**
+     uses it and falls back to full on unknown filesystems. **In progress**,
+     built bottom-up: ✅ GPT partition parser (`used_blocks.rs`, tested); next is
+     the NTFS boot sector + `$MFT` record 6 (`$Bitmap`) data-run parser, then
+     whole-disk block-map assembly, then wiring `create-image --used-only`.
 3. **APFS used-only** — APFS space manager → block map; extend Smart.
 4. **UI** — Smart/Exact toggle, Compress checkbox, size/time estimate, wired to
    the new CLI flags.

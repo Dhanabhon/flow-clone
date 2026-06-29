@@ -7,6 +7,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
+mod used_blocks;
+
 #[cfg(target_os = "windows")]
 mod win;
 
