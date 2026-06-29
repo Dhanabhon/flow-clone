@@ -176,9 +176,9 @@ export const cancelClone = (): Promise<void> => {
 };
 
 export const ejectDisk = (devicePath: string): Promise<void> =>
-  isTauriRuntime()
-    ? invoke("eject_disk", { devicePath })
-    : Promise.reject(new Error("Eject is only available in the desktop app."));
+  // Outside Tauri (browser mock), pretend the eject succeeded so the disk-list
+  // UI can be exercised in dev.
+  isTauriRuntime() ? invoke("eject_disk", { devicePath }) : Promise.resolve();
 
 export function openFullDiskAccessSettings(): Promise<void> {
   if (isTauriRuntime()) return invoke("open_full_disk_access_settings");

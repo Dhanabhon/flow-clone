@@ -45,10 +45,30 @@ export function HomeScreen() {
     beginClone,
     goTo,
   } = useFlowStore();
+  // Disks the user just ejected. Many USB enclosures keep their device node
+  // after a successful `diskutil eject` (volumes unmount, but the disk stays
+  // enumerated until physically unplugged), so hide them from the list instead
+  // of waiting for them to disappear on their own.
+  const [ejectedPaths, setEjectedPaths] = useState<Set<string>>(new Set());
+
   const selectableDisks = useMemo(
-    () => (disks ?? []).filter(isSelectableDisk),
-    [disks]
+    () =>
+      (disks ?? []).filter(
+        (d) => isSelectableDisk(d) && !ejectedPaths.has(d.device_path)
+      ),
+    [disks, ejectedPaths]
   );
+
+  // Once an ejected disk is actually gone (unplugged), stop hiding it so a
+  // re-plug shows it again.
+  useEffect(() => {
+    setEjectedPaths((prev) => {
+      if (prev.size === 0) return prev;
+      const present = new Set((disks ?? []).map((d) => d.device_path));
+      const next = new Set([...prev].filter((path) => present.has(path)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [disks]);
 
   // Surface an image job that was interrupted by a crash or power loss.
   const [pending, setPending] = useState<PendingImage | null>(null);
@@ -77,13 +97,17 @@ export function HomeScreen() {
   async function eject(disk: DiskInfo) {
     try {
       await ejectDisk(disk.device_path);
-      // Clear any selection pointing at the now-removed disk and refresh the
-      // list right away. The native watcher also fires, but its broadcast can
-      // drop events for a slow subscriber, and a selected card is rendered from
-      // stored state — so without this the card would linger after a successful
-      // eject and look like nothing happened.
+      // The disk is now safe to unplug, but it often stays enumerated, so hide
+      // it and clear any selection pointing at it — otherwise the card would
+      // linger and look like the eject did nothing. The native watcher also
+      // refreshes the list, but it can drop events for a slow subscriber.
       if (source?.device_path === disk.device_path) setSource(null);
       if (target?.device_path === disk.device_path) setTarget(null);
+      setEjectedPaths((prev) => {
+        const next = new Set(prev);
+        next.add(disk.device_path);
+        return next;
+      });
       await refetch();
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
