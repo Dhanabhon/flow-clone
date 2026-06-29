@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-06-30
+
+### Fixed
+
+- **Smart (used-only) images were wrongly blocked with "Not Enough Space"** when
+  the destination had less free space than the source disk's *capacity*. The
+  free-space pre-check sized the requirement to the full disk (e.g. 512 GB) even
+  for a used-only image that stores only the used data (e.g. ~52 GB). It now
+  sizes the check to the disk's used bytes plus headroom (compression shrinks it
+  further), so a ~52 GB Smart+Compress image no longer needs 512 GB free. Full
+  images still require the full capacity.
+
 ### Changed
 
 - The **Direct Clone** mode icon is now two stacked drives (a clearer
@@ -235,7 +247,8 @@ still stubbed.
   disk as target) lives in the Rust core, not the UI.
 - Destructive actions require typed `ERASE` confirmation.
 
-[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.0...v0.3.1

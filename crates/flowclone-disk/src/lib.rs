@@ -68,6 +68,20 @@ impl DiskCatalog {
         Self(Arc::new(MockCatalog))
     }
 
+    /// Aggregated used bytes for a whole disk, by device path. A single-disk
+    /// `find` doesn't carry usage — a whole disk has no filesystem, so usage
+    /// lives on its volumes and is summed only by `list`. Resolve it from the
+    /// full listing. Returns `None` if the disk or its usage is unknown.
+    pub fn used_bytes_for(&self, device_path: &str) -> Option<u64> {
+        let bsd = device_path.trim_start_matches("/dev/");
+        self.0
+            .list()
+            .ok()?
+            .into_iter()
+            .find(|disk| disk.device_path == device_path || disk.bsd_name == bsd)
+            .and_then(|disk| disk.used_bytes)
+    }
+
     #[cfg(target_os = "macos")]
     fn platform_catalog() -> Self {
         Self(Arc::new(macos::MacosCatalog::new()))
@@ -138,5 +152,19 @@ impl DiskCatalogApi for MockCatalog {
         }
 
         Ok(disks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn used_bytes_for_resolves_via_listing() {
+        let catalog = DiskCatalog::mock();
+        // The whole-disk usage is only available through the aggregated listing.
+        assert_eq!(catalog.used_bytes_for("/dev/disk4"), Some(412_000_000_000));
+        assert_eq!(catalog.used_bytes_for("disk4"), Some(412_000_000_000));
+        assert_eq!(catalog.used_bytes_for("/dev/nope"), None);
     }
 }

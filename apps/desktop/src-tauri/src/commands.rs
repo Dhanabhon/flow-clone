@@ -197,7 +197,16 @@ pub async fn create_image_stub(
     }
     let source = find_disk(&source_path)?;
     let raw_source_path = raw_device_path(&source.device_path);
-    let required_image_bytes = flow_image_file_len(&source)?;
+    // A used-only image stores only the disk's used bytes (compression shrinks it
+    // further), so size the free-space check to that — not the full capacity — or
+    // a small sparse image is falsely blocked when free space < disk capacity.
+    // `find` doesn't carry whole-disk usage, so resolve it from the listing.
+    let used_bytes = if used_only {
+        flowclone_disk::DiskCatalog::platform_default().used_bytes_for(&source.device_path)
+    } else {
+        None
+    };
+    let required_image_bytes = estimated_image_required_bytes(&source, used_only, used_bytes)?;
     flowclone_raw::ensure_free_space_for_output(&image_path, required_image_bytes)
         .map_err(|error| error.to_string())?;
 
@@ -875,6 +884,31 @@ fn flow_image_file_len(source: &DiskInfo) -> Result<u64, String> {
         + IMAGE_HEADER_LEN_BYTES as u64
         + header_len
         + source.total_bytes)
+}
+
+/// Free space the image needs. A full image needs the whole disk; a used-only
+/// image needs only the disk's used bytes plus headroom (compression shrinks it
+/// further), capped at the full size — so a sparse image isn't blocked just
+/// because the disk's *capacity* exceeds the free space. `used_bytes` is `None`
+/// when unknown, in which case we conservatively require the full size.
+fn estimated_image_required_bytes(
+    source: &DiskInfo,
+    used_only: bool,
+    used_bytes: Option<u64>,
+) -> Result<u64, String> {
+    let full = flow_image_file_len(source)?;
+    if !used_only {
+        return Ok(full);
+    }
+    match used_bytes {
+        Some(used) if used > 0 => {
+            let overhead = full.saturating_sub(source.total_bytes); // header bytes
+            let headroom = (used / 5).max(1_000_000_000); // +20%, min 1 GB
+            let payload = used.saturating_add(headroom).min(source.total_bytes);
+            Ok(overhead.saturating_add(payload))
+        }
+        _ => Ok(full),
+    }
 }
 
 fn partial_image_path(image_path: &str) -> String {
@@ -1833,5 +1867,40 @@ mod tests {
         let len = flow_image_file_len(&source).expect("image length");
 
         assert!(len > source.total_bytes);
+    }
+
+    #[test]
+    fn estimated_required_bytes_sizes_used_only_to_used_space() {
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.total_bytes = 512_000_000_000; // 512 GB disk
+        let full = flow_image_file_len(&source).expect("full length");
+        let used = 52_000_000_000u64; // ~52 GB used
+
+        // Full image: needs the whole disk regardless of mode.
+        assert_eq!(
+            estimated_image_required_bytes(&source, false, Some(used)).unwrap(),
+            full
+        );
+
+        // Used-only: needs ~used + headroom, far below the full capacity.
+        let req = estimated_image_required_bytes(&source, true, Some(used)).unwrap();
+        assert!(req < full, "used-only must not require the full disk");
+        assert!(req >= used, "must cover the used bytes");
+        assert!(
+            req <= used + used / 5 + 2_000_000_000,
+            "≈ used + 20% + header"
+        );
+
+        // Unknown used space → conservative full size.
+        assert_eq!(
+            estimated_image_required_bytes(&source, true, None).unwrap(),
+            full
+        );
+
+        // Used >= capacity (e.g. a near-full disk) is capped at the full size.
+        assert_eq!(
+            estimated_image_required_bytes(&source, true, Some(source.total_bytes)).unwrap(),
+            full
+        );
     }
 }

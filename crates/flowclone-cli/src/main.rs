@@ -239,7 +239,15 @@ fn create_image() -> Result<()> {
     eprintln!("raw:    {raw_source}");
     eprintln!("output: {output_path}");
 
-    let required_bytes = flow_image_file_len(&source)?;
+    // A used-only image stores only the disk's used bytes (compression shrinks it
+    // further); size the free-space check to that, not the full capacity. `find`
+    // doesn't carry whole-disk usage, so resolve it from the listing.
+    let used_bytes = if used_only {
+        catalog.used_bytes_for(&source.device_path)
+    } else {
+        None
+    };
+    let required_bytes = estimated_image_required_bytes(&source, used_only, used_bytes)?;
     let space = flowclone_raw::ensure_free_space_for_output(output_path, required_bytes)?;
     eprintln!("image:  {} (estimate)", humansize(required_bytes));
     eprintln!("free:   {}", humansize(space.available_bytes));
@@ -1370,6 +1378,30 @@ fn flow_image_file_len(source: &DiskInfo) -> Result<u64> {
     Ok(FLOW_IMAGE_MAGIC.len() as u64 + 8 + header_len + source.total_bytes)
 }
 
+/// Free space the image needs. A full image needs the whole disk; a used-only
+/// image needs only the disk's used bytes plus headroom (compression shrinks it
+/// further), capped at the full size. `used_bytes` is `None` when unknown, in
+/// which case we conservatively require the full size.
+fn estimated_image_required_bytes(
+    source: &DiskInfo,
+    used_only: bool,
+    used_bytes: Option<u64>,
+) -> Result<u64> {
+    let full = flow_image_file_len(source)?;
+    if !used_only {
+        return Ok(full);
+    }
+    match used_bytes {
+        Some(used) if used > 0 => {
+            let overhead = full.saturating_sub(source.total_bytes); // header bytes
+            let headroom = (used / 5).max(1_000_000_000); // +20%, min 1 GB
+            let payload = used.saturating_add(headroom).min(source.total_bytes);
+            Ok(overhead.saturating_add(payload))
+        }
+        _ => Ok(full),
+    }
+}
+
 fn raw_device_path(path: &str) -> String {
     if let Some(suffix) = path.strip_prefix("/dev/disk") {
         format!("/dev/rdisk{suffix}")
@@ -2021,5 +2053,27 @@ mod tests {
         no_serial_found.model = "EC-6606".into();
         no_serial_found.total_bytes = 250_000_000_000;
         assert!(same_disk(&no_serial_found, &no_serial_want));
+    }
+
+    #[test]
+    fn estimated_required_bytes_sizes_used_only_to_used_space() {
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.total_bytes = 512_000_000_000;
+        let full = flow_image_file_len(&source).expect("full length");
+        let used = 52_000_000_000u64;
+
+        // Full image needs the whole disk regardless of mode.
+        assert_eq!(
+            estimated_image_required_bytes(&source, false, Some(used)).unwrap(),
+            full
+        );
+        // Used-only needs only ~used + headroom, far below the capacity.
+        let req = estimated_image_required_bytes(&source, true, Some(used)).unwrap();
+        assert!(req < full && req >= used);
+        // Unknown used space falls back to the conservative full size.
+        assert_eq!(
+            estimated_image_required_bytes(&source, true, None).unwrap(),
+            full
+        );
     }
 }

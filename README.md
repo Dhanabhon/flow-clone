@@ -250,7 +250,7 @@ pnpm tauri build --bundles nsis
 Expected output:
 
 ```text
-target\release\bundle\nsis\FlowClone_0.3.3_x64-setup.exe
+target\release\bundle\nsis\FlowClone_0.3.4_x64-setup.exe
 ```
 
 If the Windows host is not x64, install the target explicitly and pass it:
