@@ -8,6 +8,50 @@ FlowClone is a modern, open-source SSD migration assistant for macOS and Windows
 (macOS-first). It is a Tauri desktop app with a React interface, English/Thai UI
 support, and a Rust workspace behind it.
 
+## Key features
+
+- **Smart imaging that skips the empty space.** FlowClone reads only the blocks
+  your filesystem is actually using — so a barely-filled 512 GB SSD becomes a
+  ~50 GB image, not a 512 GB one. Quicker to capture, smaller to keep.
+- **One-tap compression.** Shrink images even further with built-in zstd — a tiny
+  `.flowimg` you can stash on any drive or in the cloud.
+- **Exact when it matters.** Want a true bit-for-bit copy instead? Flip one switch
+  from Smart to Exact for a full, faithful clone.
+- **Upgrade your SSD in two moves.** Image the old drive, restore onto the new one
+  — the painless way to jump from 256 GB to 512 GB and beyond.
+- **Safety wired into the core.** Your source disk is never written to. Restores
+  demand a typed `ERASE` and flat-out refuse boot, internal, read-only, and
+  too-small targets — guardrails enforced in the Rust engine, not just the UI.
+- **Built for the real world.** Loose cable? It reconnects and resumes. Bad
+  sector? It skips and logs it instead of giving up. Power loss? The next launch
+  flags the unfinished image so nothing silently breaks.
+- **Never guess what's happening.** Live percentage, transfer speed, GB written,
+  and ETA — plus a desktop notification the moment a job finishes.
+- **Plug and go.** Drives pop in and out of the list the instant you connect or
+  remove them, and you can safely eject straight from the card.
+- **Your language, your theme.** English & ไทย, light & dark — switch anytime.
+- **Light, native, and quick.** A ~7 MB Tauri + Rust download built for macOS
+  (Apple Silicon & Intel) — no Electron bloat, no telemetry, no account.
+- **Free and open source.** MIT-licensed — inspect it, build it, trust it.
+
+## Disclaimer
+
+> **Use FlowClone entirely at your own risk.** It performs low-level disk
+> operations — reading raw devices and **erasing and overwriting entire disks**.
+> A wrong disk choice, a failing drive, a flaky cable or enclosure, or an
+> interrupted write can lead to **permanent data loss or a disk you can no longer
+> use**.
+>
+> FlowClone is provided **"as is", without warranty of any kind**. The authors and
+> contributors accept **no responsibility or liability for any data loss, file or
+> filesystem corruption, drive or SSD failure, hardware damage, or any other loss**
+> arising from using — or being unable to use — this software (see the
+> [License](#license)).
+>
+> **Before you start:** keep a separate, verified backup of anything you can't
+> afford to lose, and double-check the source and target disks every time.
+> Choosing the correct drives is your responsibility.
+
 ## Safety warning
 
 FlowClone can now create and restore raw disk images on macOS and Windows.
