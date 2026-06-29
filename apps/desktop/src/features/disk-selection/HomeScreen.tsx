@@ -238,7 +238,7 @@ export function HomeScreen() {
           />
           <ModeButton
             active={mode === "clone"}
-            icon={<DiskToDiskIcon className="h-4 w-7" />}
+            icon={<DiskToDiskIcon className="h-4 w-4" />}
             label={t("directCloneMode")}
             onClick={() => setMode("clone")}
             disabled

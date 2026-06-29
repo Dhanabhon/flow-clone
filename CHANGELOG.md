@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The **Direct Clone** mode icon is now two stacked drives (a clearer
+  disk-to-disk clone cue) instead of a small drive, arrow, and larger drive.
+
 ## [0.3.3] - 2026-06-29
 
 ### Fixed
