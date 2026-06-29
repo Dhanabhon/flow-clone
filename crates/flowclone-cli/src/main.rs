@@ -21,6 +21,42 @@ const _: () = assert!(
     IMAGE_BLOCK_SIZE.is_multiple_of(4096),
     "IMAGE_BLOCK_SIZE must be a multiple of 4096 to keep raw disk I/O sector-aligned"
 );
+/// v2 image magic. v2 adds a `mode` (full / used-only) and optional zstd
+/// compression. Kept the same byte length as v1 so the version can be sniffed by
+/// reading a fixed-size magic and comparing.
+const FLOW_IMAGE_MAGIC_V2: &[u8] = b"FLOWCLONE_FLOWIMG_V2\n";
+const FLOW_IMAGE_VERSION_V2: u64 = 2;
+const _: () = assert!(
+    FLOW_IMAGE_MAGIC.len() == FLOW_IMAGE_MAGIC_V2.len(),
+    "v1 and v2 magics must be the same length so the version can be sniffed"
+);
+/// zstd level for `--compress`. 3 is zstd's default — a good speed/ratio balance.
+const ZSTD_LEVEL: i32 = 3;
+
+/// Payload codec recorded in a v2 image header.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Compression {
+    None,
+    Zstd,
+}
+
+impl Compression {
+    fn as_str(self) -> &'static str {
+        match self {
+            Compression::None => "none",
+            Compression::Zstd => "zstd",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "none" => Ok(Compression::None),
+            "zstd" => Ok(Compression::Zstd),
+            other => anyhow::bail!("unsupported image compression: {other}"),
+        }
+    }
+}
+
 /// Reject image headers larger than this — guards against a corrupt length field.
 const MAX_IMAGE_HEADER_BYTES: u64 = 1024 * 1024;
 /// macOS errno for "Inappropriate ioctl for device" — fsync on an unbuffered
@@ -101,6 +137,12 @@ fn create_image() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let source_path = arg_value(&args, "--source")?;
     let output_path = arg_value(&args, "--output")?;
+    let compress = args.iter().any(|arg| arg == "--compress");
+    // Phase 1 has no filesystem parser yet, so "used-only" degrades to a full
+    // image rather than failing — keeps the flag stable for the Smart UI path.
+    if args.iter().any(|arg| arg == "--used-only") {
+        eprintln!("note: --used-only is not implemented yet; writing a full image");
+    }
     let catalog = flowclone_disk::DiskCatalog::platform_default();
     let source = catalog
         .find(source_path)?
@@ -113,9 +155,13 @@ fn create_image() -> Result<()> {
 
     let required_bytes = flow_image_file_len(&source)?;
     let space = flowclone_raw::ensure_free_space_for_output(output_path, required_bytes)?;
-    eprintln!("image:  {}", humansize(required_bytes));
+    eprintln!("image:  {} (estimate)", humansize(required_bytes));
     eprintln!("free:   {}", humansize(space.available_bytes));
-    eprintln!("note:   this writes a full raw image; keep the command running until done");
+    eprintln!(
+        "mode:   full image{}",
+        if compress { ", zstd-compressed" } else { "" }
+    );
+    eprintln!("note:   keep the command running until done");
 
     // Clear any leftover cancel sentinel from a previous run so it doesn't
     // immediately abort this one.
@@ -126,7 +172,11 @@ fn create_image() -> Result<()> {
     // so it unmounts the disk's volumes first and remounts them on drop. Windows
     // serves raw reads while mounted, so its prep is a no-op.
     let _prep = prepare_source_for_read(&source.device_path)?;
-    create_flow_image_file(&raw_source, output_path, &source)?;
+    if compress {
+        create_compressed_image_file(&raw_source, output_path, &source)?;
+    } else {
+        create_flow_image_file(&raw_source, output_path, &source)?;
+    }
     Ok(())
 }
 
@@ -231,8 +281,12 @@ fn remount_disk(device_path: &str) {
 
 /// Image header fields needed to restore (parsed from a `.flowimg`).
 struct ImageInfo {
-    payload_bytes: u64,
+    /// Logical bytes written to the target (the decompressed payload size).
+    write_bytes: u64,
+    /// File offset where the (possibly compressed) payload begins.
     data_offset: u64,
+    /// Codec of the payload between `data_offset` and EOF.
+    compression: Compression,
     source: DiskInfo,
 }
 
@@ -242,6 +296,16 @@ struct FlowImageHeaderOwned {
     version: u64,
     source: DiskInfo,
     payload_bytes: u64,
+}
+
+#[derive(Deserialize)]
+struct FlowImageHeaderV2Owned {
+    format: String,
+    version: u64,
+    source: DiskInfo,
+    uncompressed_bytes: u64,
+    compression: String,
+    mode: String,
 }
 
 /// Restore a `.flowimg` onto a target disk. **Destructive** — overwrites it.
@@ -259,14 +323,14 @@ fn restore_image() -> Result<()> {
     let target = catalog
         .find(target_path)?
         .ok_or_else(|| anyhow::anyhow!("target disk not found: {target_path}"))?;
-    validate_restore_target(&target, info.payload_bytes)?;
+    validate_restore_target(&target, info.write_bytes)?;
     let raw_target = raw_device_path(&target.device_path);
 
     eprintln!("image:   {image_path}");
     eprintln!(
         "source:  {} ({})",
         info.source.model,
-        humansize(info.payload_bytes)
+        humansize(info.write_bytes)
     );
     eprintln!(
         "target:  {} -> {} ({})",
@@ -287,7 +351,7 @@ fn restore_image() -> Result<()> {
     eprintln!(
         "WARNING: erasing {} and writing {} ...",
         target.device_path,
-        humansize(info.payload_bytes)
+        humansize(info.write_bytes)
     );
     let _prep = prepare_target_for_write(&target.device_path)?;
     write_image_to_target(image_path, &raw_target, &info)?;
@@ -322,18 +386,24 @@ fn validate_restore_target(target: &DiskInfo, payload_bytes: u64) -> Result<()> 
     Ok(())
 }
 
-/// Read + validate a `.flowimg` header, returning where the payload starts.
+/// Read + validate a `.flowimg` header (v1 or v2), returning where the payload
+/// starts, how many logical bytes it expands to, and how it is compressed.
 fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
     let mut file = File::open(image_path)
         .map_err(|error| anyhow::anyhow!("open image {image_path}: {error}"))?;
     let file_len = file.metadata()?.len();
 
+    // Both magics are the same length, so a single read sniffs the version.
     let mut magic = vec![0u8; FLOW_IMAGE_MAGIC.len()];
     file.read_exact(&mut magic)
         .map_err(|error| anyhow::anyhow!("read image header: {error}"))?;
-    if magic != FLOW_IMAGE_MAGIC {
+    let is_v2 = if magic == FLOW_IMAGE_MAGIC {
+        false
+    } else if magic == FLOW_IMAGE_MAGIC_V2 {
+        true
+    } else {
         anyhow::bail!("{image_path} is not a FlowClone image (bad magic)");
-    }
+    };
 
     let mut len_bytes = [0u8; 8];
     file.read_exact(&mut len_bytes)?;
@@ -344,27 +414,71 @@ fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
 
     let mut header = vec![0u8; header_len as usize];
     file.read_exact(&mut header)?;
-    let parsed: FlowImageHeaderOwned = serde_json::from_slice(&header)
+    let data_offset = FLOW_IMAGE_MAGIC.len() as u64 + 8 + header_len;
+
+    if !is_v2 {
+        let parsed: FlowImageHeaderOwned = serde_json::from_slice(&header)
+            .map_err(|error| anyhow::anyhow!("invalid image header: {error}"))?;
+        if parsed.format != FLOW_IMAGE_FORMAT {
+            anyhow::bail!("unsupported image format: {}", parsed.format);
+        }
+        if parsed.version != FLOW_IMAGE_VERSION {
+            anyhow::bail!("unsupported image version: {}", parsed.version);
+        }
+        if parsed.payload_bytes == 0 || parsed.payload_bytes != parsed.source.total_bytes {
+            anyhow::bail!("invalid image payload size");
+        }
+        let expected = data_offset + parsed.payload_bytes;
+        if file_len != expected {
+            anyhow::bail!("image size mismatch: expected {expected} bytes, found {file_len}");
+        }
+        return Ok(ImageInfo {
+            write_bytes: parsed.payload_bytes,
+            data_offset,
+            compression: Compression::None,
+            source: parsed.source,
+        });
+    }
+
+    let parsed: FlowImageHeaderV2Owned = serde_json::from_slice(&header)
         .map_err(|error| anyhow::anyhow!("invalid image header: {error}"))?;
     if parsed.format != FLOW_IMAGE_FORMAT {
         anyhow::bail!("unsupported image format: {}", parsed.format);
     }
-    if parsed.version != FLOW_IMAGE_VERSION {
+    if parsed.version != FLOW_IMAGE_VERSION_V2 {
         anyhow::bail!("unsupported image version: {}", parsed.version);
     }
-    if parsed.payload_bytes == 0 || parsed.payload_bytes != parsed.source.total_bytes {
+    // Phase 1 only writes (and restores) full images; used-only lands with the
+    // block-map parser in a later phase.
+    if parsed.mode != "full" {
+        anyhow::bail!("unsupported image mode: {}", parsed.mode);
+    }
+    let compression = Compression::parse(&parsed.compression)?;
+    if parsed.uncompressed_bytes == 0 || parsed.uncompressed_bytes != parsed.source.total_bytes {
         anyhow::bail!("invalid image payload size");
     }
-
-    let data_offset = FLOW_IMAGE_MAGIC.len() as u64 + 8 + header_len;
-    let expected = data_offset + parsed.payload_bytes;
-    if file_len != expected {
-        anyhow::bail!("image size mismatch: expected {expected} bytes, found {file_len}");
+    match compression {
+        // Uncompressed: the stored size equals the logical size, so check it
+        // against truncation.
+        Compression::None => {
+            let expected = data_offset + parsed.uncompressed_bytes;
+            if file_len != expected {
+                anyhow::bail!("image size mismatch: expected {expected} bytes, found {file_len}");
+            }
+        }
+        // Compressed: the stored size varies and can't be predicted. A truncated
+        // stream is caught at restore time — the decoder yields fewer than
+        // uncompressed_bytes and the read fails.
+        Compression::Zstd => {
+            if file_len <= data_offset {
+                anyhow::bail!("image has no payload");
+            }
+        }
     }
-
     Ok(ImageInfo {
-        payload_bytes: parsed.payload_bytes,
+        write_bytes: parsed.uncompressed_bytes,
         data_offset,
+        compression,
         source: parsed.source,
     })
 }
@@ -377,6 +491,16 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
     image
         .seek(SeekFrom::Start(info.data_offset))
         .map_err(|error| anyhow::anyhow!("seek to image payload: {error}"))?;
+    // The payload is either a raw byte stream (v1, v2 uncompressed) or a single
+    // zstd stream (v2 compressed). Decompress transparently so the write loop is
+    // identical for both — it always pulls `info.write_bytes` logical bytes.
+    let mut payload: Box<dyn Read> = match info.compression {
+        Compression::None => Box::new(image),
+        Compression::Zstd => Box::new(
+            zstd::Decoder::new(image)
+                .map_err(|error| anyhow::anyhow!("init decompressor for {image_path}: {error}"))?,
+        ),
+    };
     // Read access too: Windows opens a `\\.\PHYSICALDRIVE` for raw writes with
     // GENERIC_READ | GENERIC_WRITE, and read+write is harmless on a raw Unix
     // device opened by the elevated worker.
@@ -402,13 +526,13 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
     let mut bytes_done = 0u64;
     let mut last_print = Instant::now();
 
-    while bytes_done < info.payload_bytes {
+    while bytes_done < info.write_bytes {
         if std::path::Path::new(&cancel_path).exists() {
             let _ = std::fs::remove_file(&cancel_path);
             anyhow::bail!("cancelled by user");
         }
-        let remaining = (info.payload_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
-        image.read_exact(&mut buf[..remaining]).map_err(|error| {
+        let remaining = (info.write_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
+        payload.read_exact(&mut buf[..remaining]).map_err(|error| {
             anyhow::anyhow!("read image at payload offset {bytes_done}: {error}")
         })?;
         // Pad the final block up to a whole sector with zeros so the raw write is
@@ -427,19 +551,12 @@ fn write_image_to_target(image_path: &str, raw_target: &str, info: &ImageInfo) -
         })?;
         bytes_done += remaining as u64;
 
-        if last_print.elapsed().as_secs() >= 1 || bytes_done == info.payload_bytes {
+        if last_print.elapsed().as_secs() >= 1 || bytes_done == info.write_bytes {
             eprintln!(
                 "{}",
-                progress_line(
-                    bytes_done,
-                    info.payload_bytes,
-                    start.elapsed().as_secs_f64()
-                )
+                progress_line(bytes_done, info.write_bytes, start.elapsed().as_secs_f64())
             );
-            let _ = std::fs::write(
-                &progress_path,
-                format!("{bytes_done} {}", info.payload_bytes),
-            );
+            let _ = std::fs::write(&progress_path, format!("{bytes_done} {}", info.write_bytes));
             last_print = Instant::now();
         }
     }
@@ -574,11 +691,24 @@ struct FlowImageHeader<'a> {
     note: &'a str,
 }
 
+#[derive(Serialize)]
+struct FlowImageHeaderV2<'a> {
+    format: &'a str,
+    version: u64,
+    source: &'a DiskInfo,
+    /// Block granularity of the (future) block map; informational in Phase 1.
+    block_size: u64,
+    /// Logical payload size — what restore writes to the target. Full mode keeps
+    /// this equal to the source capacity.
+    uncompressed_bytes: u64,
+    compression: &'a str,
+    /// "full" today; "used-only" arrives with the block-map parser.
+    mode: &'a str,
+    note: &'a str,
+}
+
 fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo) -> Result<()> {
     let partial_path = partial_image_path(image_path);
-    // The GUI can't signal this root process directly, so it drops a sentinel
-    // file we poll to support cancellation. `create_image` clears any stale one
-    // before starting, so an existing sentinel here means "abort".
     let cancel_path = cancel_sentinel_path(image_path);
     let mut reader = File::open(source_path)
         .map_err(|error| anyhow::anyhow!("open source {source_path}: {error}"))?;
@@ -586,6 +716,78 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
         .map_err(|error| anyhow::anyhow!("create image {partial_path}: {error}"))?;
     write_flow_image_header(&mut image, source)?;
 
+    copy_disk_payload(
+        &mut reader,
+        &mut image,
+        source,
+        image_path,
+        &cancel_path,
+        &partial_path,
+    )?;
+
+    image.sync_all()?;
+    drop(image);
+    finalize_image(&partial_path, image_path)
+}
+
+/// Like [`create_flow_image_file`] but writes a v2 image whose payload is a
+/// single zstd stream — a smaller file at the cost of CPU. Restore decompresses
+/// transparently.
+fn create_compressed_image_file(
+    source_path: &str,
+    image_path: &str,
+    source: &DiskInfo,
+) -> Result<()> {
+    let partial_path = partial_image_path(image_path);
+    let cancel_path = cancel_sentinel_path(image_path);
+    let mut reader = File::open(source_path)
+        .map_err(|error| anyhow::anyhow!("open source {source_path}: {error}"))?;
+    let mut image = File::create(&partial_path)
+        .map_err(|error| anyhow::anyhow!("create image {partial_path}: {error}"))?;
+    // The header is written uncompressed; only the payload goes through zstd.
+    write_flow_image_header_v2(&mut image, source, Compression::Zstd)?;
+    let mut encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
+        .map_err(|error| anyhow::anyhow!("init compressor: {error}"))?;
+
+    copy_disk_payload(
+        &mut reader,
+        &mut encoder,
+        source,
+        image_path,
+        &cancel_path,
+        &partial_path,
+    )?;
+
+    // Flush the zstd stream and recover the file handle to fsync + finalize.
+    let image = encoder
+        .finish()
+        .map_err(|error| anyhow::anyhow!("finish compressor: {error}"))?;
+    image.sync_all()?;
+    drop(image);
+    finalize_image(&partial_path, image_path)
+}
+
+/// Atomically publish a finished `.part` image as the real file.
+fn finalize_image(partial_path: &str, image_path: &str) -> Result<()> {
+    std::fs::rename(partial_path, image_path)
+        .map_err(|error| anyhow::anyhow!("finalize image {image_path}: {error}"))
+}
+
+/// Stream the source disk into `sink` block by block, with cancellation,
+/// ddrescue-style bad-block skipping, and progress. Shared by the raw (v1) and
+/// compressed (v2) create paths — `sink` is the image file or a zstd encoder.
+///
+/// The GUI can't signal this (possibly elevated) process directly, so it drops a
+/// sentinel file we poll for cancellation; `create_image` clears any stale one
+/// before starting, so an existing sentinel here means "abort".
+fn copy_disk_payload<W: Write>(
+    reader: &mut File,
+    sink: &mut W,
+    source: &DiskInfo,
+    image_path: &str,
+    cancel_path: &str,
+    partial_path: &str,
+) -> Result<()> {
     let start = Instant::now();
     let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
     let mut bytes_done = 0u64;
@@ -599,9 +801,9 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
     let mut retries_at_offset = 0u32;
 
     while bytes_done < source.total_bytes {
-        if std::path::Path::new(&cancel_path).exists() {
-            let _ = std::fs::remove_file(&partial_path);
-            let _ = std::fs::remove_file(&cancel_path);
+        if std::path::Path::new(cancel_path).exists() {
+            let _ = std::fs::remove_file(partial_path);
+            let _ = std::fs::remove_file(cancel_path);
             anyhow::bail!("cancelled by user");
         }
         let remaining = (source.total_bytes - bytes_done).min(IMAGE_BLOCK_SIZE as u64) as usize;
@@ -614,7 +816,7 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
             }
             Ok(read) => {
                 retries_at_offset = 0;
-                image.write_all(&buf[..read]).map_err(|error| {
+                sink.write_all(&buf[..read]).map_err(|error| {
                     anyhow::anyhow!(
                         "write image {partial_path} at source offset {} ({}): {error}",
                         bytes_done,
@@ -645,13 +847,13 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
                 // The drive may have just dropped off the bus and re-enumerated;
                 // re-acquire and retry the same offset a small number of times.
                 if retries_at_offset <= READ_RETRIES_BEFORE_SKIP {
-                    reader = reacquire_reader(source, bytes_done)?;
+                    *reader = reacquire_reader(source, bytes_done)?;
                     continue;
                 }
                 // Still unreadable: treat this block as a bad region. Zero-fill it,
                 // record it, and move on instead of aborting or hammering it.
                 buf[..remaining].fill(0);
-                image.write_all(&buf[..remaining]).map_err(|error| {
+                sink.write_all(&buf[..remaining]).map_err(|error| {
                     anyhow::anyhow!("write zero-fill at offset {bytes_done}: {error}")
                 })?;
                 bad_regions.push((bytes_done, remaining as u64));
@@ -673,7 +875,7 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
                     );
                 }
                 if bytes_done < source.total_bytes {
-                    reader = reacquire_reader(source, bytes_done)?;
+                    *reader = reacquire_reader(source, bytes_done)?;
                 }
             }
         }
@@ -689,10 +891,6 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
         );
     }
 
-    image.sync_all()?;
-    drop(image);
-    std::fs::rename(&partial_path, image_path)
-        .map_err(|error| anyhow::anyhow!("finalize image {image_path}: {error}"))?;
     eprintln!(
         "done in {}, wrote {}",
         format_duration(start.elapsed().as_secs()),
@@ -752,6 +950,33 @@ fn flow_image_header(source: &DiskInfo) -> Result<Vec<u8>> {
         source,
         payload_bytes: source.total_bytes,
         note: "Raw disk payload follows this header.",
+    })
+    .map_err(Into::into)
+}
+
+fn write_flow_image_header_v2(
+    writer: &mut impl Write,
+    source: &DiskInfo,
+    compression: Compression,
+) -> Result<()> {
+    let header = flow_image_header_v2(source, compression)?;
+
+    writer.write_all(FLOW_IMAGE_MAGIC_V2)?;
+    writer.write_all(&(header.len() as u64).to_le_bytes())?;
+    writer.write_all(&header)?;
+    Ok(())
+}
+
+fn flow_image_header_v2(source: &DiskInfo, compression: Compression) -> Result<Vec<u8>> {
+    serde_json::to_vec(&FlowImageHeaderV2 {
+        format: FLOW_IMAGE_FORMAT,
+        version: FLOW_IMAGE_VERSION_V2,
+        source,
+        block_size: IMAGE_BLOCK_SIZE as u64,
+        uncompressed_bytes: source.total_bytes,
+        compression: compression.as_str(),
+        mode: "full",
+        note: "Full-disk payload follows this header.",
     })
     .map_err(Into::into)
 }
@@ -1014,7 +1239,7 @@ mod tests {
         write_test_image(&image_path, payload);
 
         let info = read_flow_image_header(&image_path).expect("read header");
-        assert_eq!(info.payload_bytes, payload.len() as u64);
+        assert_eq!(info.write_bytes, payload.len() as u64);
         assert_eq!(info.source.model, "Test SSD");
         assert!(info.data_offset > FLOW_IMAGE_MAGIC.len() as u64);
 
@@ -1048,6 +1273,128 @@ mod tests {
         let written = std::fs::read(&target_path).expect("read target");
         assert_eq!(written, payload);
 
+        std::fs::remove_file(image_path).ok();
+        std::fs::remove_file(target_path).ok();
+    }
+
+    #[test]
+    fn compression_parses_known_codecs_and_rejects_others() {
+        assert!(matches!(
+            Compression::parse("none").unwrap(),
+            Compression::None
+        ));
+        assert!(matches!(
+            Compression::parse("zstd").unwrap(),
+            Compression::Zstd
+        ));
+        assert!(Compression::parse("lz4").is_err());
+        assert_eq!(Compression::None.as_str(), "none");
+        assert_eq!(Compression::Zstd.as_str(), "zstd");
+    }
+
+    /// Write a v2 image directly (the create path only emits v2 when compressing,
+    /// so this exercises reading/restoring an uncompressed v2 — what the future
+    /// used-only mode will produce).
+    fn write_test_image_v2(path: &str, payload: &[u8], compression: Compression) {
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.model = "Test SSD V2".into();
+        source.total_bytes = payload.len() as u64;
+        let mut file = File::create(path).expect("create v2 test image");
+        write_flow_image_header_v2(&mut file, &source, compression).expect("write v2 header");
+        match compression {
+            Compression::None => file.write_all(payload).expect("write payload"),
+            Compression::Zstd => {
+                let mut encoder = zstd::Encoder::new(&mut file, ZSTD_LEVEL).expect("encoder");
+                encoder.write_all(payload).expect("compress payload");
+                encoder.finish().expect("finish encoder");
+            }
+        }
+        file.sync_all().expect("flush image");
+    }
+
+    #[test]
+    fn restores_a_v2_uncompressed_image() {
+        let payload = b"flowclone v2 uncompressed payload!";
+        let mut image_path = std::env::temp_dir();
+        image_path.push(format!(
+            "flowclone-cli-v2none-{}.flowimg",
+            std::process::id()
+        ));
+        let image_path = image_path.to_string_lossy().to_string();
+        let mut target_path = std::env::temp_dir();
+        target_path.push(format!(
+            "flowclone-cli-v2none-{}.target",
+            std::process::id()
+        ));
+        let target_path = target_path.to_string_lossy().to_string();
+
+        write_test_image_v2(&image_path, payload, Compression::None);
+        let info = read_flow_image_header(&image_path).expect("read v2 header");
+        assert_eq!(info.write_bytes, payload.len() as u64);
+        assert!(matches!(info.compression, Compression::None));
+
+        File::create(&target_path).expect("pre-create target");
+        write_image_to_target(&image_path, &target_path, &info).expect("restore");
+
+        assert_eq!(std::fs::read(&target_path).expect("read target"), payload);
+
+        std::fs::remove_file(image_path).ok();
+        std::fs::remove_file(target_path).ok();
+    }
+
+    #[test]
+    fn round_trips_a_v2_compressed_image() {
+        // A short repeating pattern compresses heavily, so the image must end up
+        // smaller than the raw payload, and restoring it must reproduce it byte
+        // for byte.
+        let payload: Vec<u8> = b"flowclone-sparse-pattern"
+            .iter()
+            .copied()
+            .cycle()
+            .take(256 * 1024)
+            .collect();
+
+        let mut source_path = std::env::temp_dir();
+        source_path.push(format!(
+            "flowclone-cli-v2zstd-{}.source",
+            std::process::id()
+        ));
+        let source_path = source_path.to_string_lossy().to_string();
+        let mut image_path = std::env::temp_dir();
+        image_path.push(format!(
+            "flowclone-cli-v2zstd-{}.flowimg",
+            std::process::id()
+        ));
+        let image_path = image_path.to_string_lossy().to_string();
+        let mut target_path = std::env::temp_dir();
+        target_path.push(format!(
+            "flowclone-cli-v2zstd-{}.target",
+            std::process::id()
+        ));
+        let target_path = target_path.to_string_lossy().to_string();
+
+        std::fs::write(&source_path, &payload).expect("write source");
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.total_bytes = payload.len() as u64;
+        create_compressed_image_file(&source_path, &image_path, &source)
+            .expect("create compressed");
+
+        let image_len = std::fs::metadata(&image_path).expect("image meta").len();
+        assert!(
+            image_len < payload.len() as u64,
+            "expected compression to shrink the image, got {image_len} bytes"
+        );
+
+        let info = read_flow_image_header(&image_path).expect("read header");
+        assert!(matches!(info.compression, Compression::Zstd));
+        assert_eq!(info.write_bytes, payload.len() as u64);
+
+        File::create(&target_path).expect("pre-create target");
+        write_image_to_target(&image_path, &target_path, &info).expect("restore");
+
+        assert_eq!(std::fs::read(&target_path).expect("read target"), payload);
+
+        std::fs::remove_file(source_path).ok();
         std::fs::remove_file(image_path).ok();
         std::fs::remove_file(target_path).ok();
     }

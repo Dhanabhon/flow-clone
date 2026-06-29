@@ -1,7 +1,12 @@
 # Sparse Image — Design (`.flowimg` v2)
 
-Status: **design / not yet implemented**. This is the plan agreed before writing
-any destructive format code. Read `docs/SAFETY.md` first.
+Status: **Phase 1 implemented (CLI)**; Phases 2–4 not yet started. Read
+`docs/SAFETY.md` first.
+
+Phase 1 shipped the v2 container + Exact (full) mode + optional zstd compression
+in the `flowclone` CLI (`create-image --compress`), with v1/v2 auto-detection on
+restore and round-trip tests. It does **not** include filesystem parsing
+(used-only) or GUI wiring yet.
 
 ## Why
 
@@ -121,9 +126,12 @@ target must be ≥ source.capacity_bytes (same rule as v1).
 
 ## Phasing (each phase ships with tests; no destructive code without `#[cfg(test)]`)
 
-1. **v2 container + Exact mode** — write/read the v2 format with `mode: full`
-   (block map = all blocks) and optional zstd. Restore handles v1 + v2. This
-   delivers compression with zero FS knowledge and proves the format round-trips.
+1. **v2 container + Exact mode** — ✅ **done (CLI).** Writes/reads the v2 format
+   with `mode: full` and optional zstd; restore handles v1 + v2; round-trip
+   tests cover both. Delivered compression with zero FS knowledge. Note: Phase 1
+   uses a single zstd stream over the full payload (no per-block map yet); the
+   block-map JSON arrives with Phase 2 as an optional, defaulted header field so
+   the version stays 2.
 2. **NTFS used-only** — `$Bitmap` parser → block map; Smart picks it, falls back
    to full. Round-trip + restore tests on a synthetic NTFS image.
 3. **APFS used-only** — APFS space manager → block map; extend Smart.

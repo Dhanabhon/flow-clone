@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`.flowimg` v2 format + compression (CLI)** — `create-image --compress`
+  writes a v2 image whose payload is a single zstd stream, producing a much
+  smaller file on compressible disks. Restore auto-detects v1 vs v2 and
+  decompresses transparently; existing v1 images still restore unchanged. This
+  is the first slice of the sparse-image work (see `docs/SPARSE_IMAGE.md`);
+  filesystem-aware "used-only" imaging follows in a later phase. The GUI does not
+  expose compression yet.
+
 ## [0.1.0] - 2026-06-28
 
 First release intended for trying real workflows: **Image Migration** and
