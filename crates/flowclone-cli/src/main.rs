@@ -313,8 +313,12 @@ fn is_permission_error(error: &anyhow::Error) -> bool {
 fn try_used_block_map(raw_source: &str, total_bytes: u64) -> Result<BlockMap> {
     // `with_context` (not `anyhow!`) so the underlying io::Error survives in the
     // chain and the caller can tell a permission error from a parse one.
-    let mut reader = File::open(raw_source).with_context(|| format!("open source {raw_source}"))?;
-    let sector_size = used_blocks::detect_sector_size(&mut reader)?;
+    let mut file = File::open(raw_source).with_context(|| format!("open source {raw_source}"))?;
+    // Detection uses one aligned 8 KiB read, which works on a raw device.
+    let sector_size = used_blocks::detect_sector_size(&mut file)?;
+    // The parsers do small, scattered reads, but macOS `/dev/rdiskN` only allows
+    // whole-sector reads — wrap the file so those reads are aligned underneath.
+    let mut reader = used_blocks::AlignedReader::new(file, sector_size);
     used_blocks::compute_used_block_map(
         &mut reader,
         total_bytes,

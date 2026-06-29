@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--used-only` now works on real macOS disks.** The GPT/NTFS parsers did
+  small, unaligned reads, but macOS raw devices (`/dev/rdiskN`) only allow
+  whole-sector, sector-aligned reads — so used-only always failed at detection
+  ("no GPT found") and fell back to a full image, even on a Windows/NTFS disk.
+  Detection now uses one aligned read and the parsers read through an
+  alignment-buffering wrapper. (The in-memory tests allowed any read and missed
+  this; a sector-aligned-only reader mock now guards it.)
 - The Full Disk Access fallback's copy-able CLI command now includes the
   selected **Smart** (`--used-only`) and **Compress** (`--compress`) options.
   They were stored only in the home screen, so the cloning screen built the

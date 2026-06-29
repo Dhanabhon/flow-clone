@@ -91,14 +91,89 @@ pub fn parse_gpt<R: Read + Seek>(reader: &mut R, sector_size: u64) -> Result<Vec
 /// or byte 4096 on a 4Kn disk. Errors if there's no GPT (the caller then images
 /// the disk in full).
 pub fn detect_sector_size<R: Read + Seek>(reader: &mut R) -> Result<u64> {
-    for size in [512u64, 4096] {
-        reader.seek(SeekFrom::Start(size))?;
-        let mut signature = [0u8; 8];
-        if reader.read_exact(&mut signature).is_ok() && &signature == GPT_SIGNATURE {
-            return Ok(size);
+    // Read the first 8 KiB in one aligned chunk. macOS raw devices
+    // (`/dev/rdiskN`) only allow whole-sector, sector-aligned reads, so we can't
+    // grab 8 bytes at LBA 1 directly; 8 KiB covers the GPT header at byte 512
+    // (512-byte sectors) or 4096 (4Kn), and is a multiple of both.
+    reader.seek(SeekFrom::Start(0))?;
+    let mut head = vec![0u8; 8192];
+    reader.read_exact(&mut head)?;
+    for size in [512usize, 4096] {
+        if head[size..size + GPT_SIGNATURE.len()] == *GPT_SIGNATURE {
+            return Ok(size as u64);
         }
     }
     anyhow::bail!("no GPT found");
+}
+
+/// Presents a normal `Read + Seek` over a device that only allows whole-sector,
+/// sector-aligned reads (macOS `/dev/rdiskN`), by reading aligned sectors
+/// underneath and slicing out the requested bytes. Used for the small, scattered
+/// metadata reads of the used-only parsers; the bulk copy already reads in
+/// sector-aligned blocks.
+pub struct AlignedReader<R> {
+    inner: R,
+    sector: u64,
+    pos: u64,
+}
+
+impl<R: Read + Seek> AlignedReader<R> {
+    pub fn new(inner: R, sector: u64) -> Self {
+        Self {
+            inner,
+            sector,
+            pos: 0,
+        }
+    }
+}
+
+impl<R: Read + Seek> Read for AlignedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let want = buf.len();
+        let aligned_start = self.pos - (self.pos % self.sector);
+        let skip = (self.pos - aligned_start) as usize;
+        let span = ((skip + want) as u64).div_ceil(self.sector) * self.sector;
+        let mut scratch = vec![0u8; span as usize];
+
+        self.inner.seek(SeekFrom::Start(aligned_start))?;
+        let mut filled = 0usize;
+        while filled < scratch.len() {
+            let n = self.inner.read(&mut scratch[filled..])?;
+            if n == 0 {
+                break; // end of device
+            }
+            filled += n;
+        }
+        if filled < skip + want {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "aligned read past end of device",
+            ));
+        }
+        buf.copy_from_slice(&scratch[skip..skip + want]);
+        self.pos += want as u64;
+        Ok(want)
+    }
+}
+
+impl<R: Read + Seek> Seek for AlignedReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        // Track the logical position; the real seek happens per read (aligned).
+        self.pos = match pos {
+            SeekFrom::Start(p) => p,
+            SeekFrom::Current(d) => self.pos.saturating_add_signed(d),
+            SeekFrom::End(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "AlignedReader does not support SeekFrom::End",
+                ))
+            }
+        };
+        Ok(self.pos)
+    }
 }
 
 /// The NTFS boot-sector (BPB) fields needed to locate and size the `$Bitmap`.
@@ -548,6 +623,78 @@ mod tests {
     fn parse_gpt_rejects_a_non_gpt_disk() {
         let disk = vec![0u8; 512 * 4];
         assert!(parse_gpt(&mut Cursor::new(disk), 512).is_err());
+    }
+
+    /// Mimics a macOS raw device: only whole-sector, sector-aligned reads are
+    /// allowed; anything else errors.
+    struct SectorOnlyReader {
+        data: Vec<u8>,
+        pos: u64,
+        sector: u64,
+    }
+
+    impl SectorOnlyReader {
+        fn new(data: Vec<u8>, sector: u64) -> Self {
+            Self {
+                data,
+                pos: 0,
+                sector,
+            }
+        }
+    }
+
+    impl Read for SectorOnlyReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.pos.is_multiple_of(self.sector)
+                || !(buf.len() as u64).is_multiple_of(self.sector)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "unaligned raw read",
+                ));
+            }
+            let start = self.pos as usize;
+            let end = (start + buf.len()).min(self.data.len());
+            let n = end.saturating_sub(start);
+            buf[..n].copy_from_slice(&self.data[start..end]);
+            self.pos += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl Seek for SectorOnlyReader {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.pos = match pos {
+                SeekFrom::Start(p) => p,
+                SeekFrom::Current(d) => self.pos.saturating_add_signed(d),
+                SeekFrom::End(d) => (self.data.len() as i64 + d) as u64,
+            };
+            Ok(self.pos)
+        }
+    }
+
+    #[test]
+    fn detect_sector_size_finds_512_via_one_aligned_read() {
+        let mut disk = synthetic_gpt();
+        disk.resize(8192, 0); // detection reads a full aligned 8 KiB
+                              // Works on a device that only allows whole-sector reads.
+        assert_eq!(
+            detect_sector_size(&mut SectorOnlyReader::new(disk, 512)).unwrap(),
+            512
+        );
+    }
+
+    #[test]
+    fn aligned_reader_lets_parsers_work_on_a_sector_only_device() {
+        let disk = synthetic_gpt();
+        // The parsers' sub-sector reads fail directly on a raw-style device...
+        assert!(parse_gpt(&mut SectorOnlyReader::new(disk.clone(), 512), 512).is_err());
+        // ...but succeed once wrapped so every read is sector-aligned.
+        let mut aligned = AlignedReader::new(SectorOnlyReader::new(disk, 512), 512);
+        let parts = parse_gpt(&mut aligned, 512).expect("parse via AlignedReader");
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].is_microsoft_basic_data());
+        assert_eq!(parts[0].first_lba, 34);
     }
 
     fn synthetic_ntfs_boot() -> Vec<u8> {
