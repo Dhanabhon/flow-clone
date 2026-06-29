@@ -32,9 +32,11 @@ fn build_menu<R: tauri::Runtime>(
         ..Default::default()
     };
 
-    // `SubmenuBuilder::about` auto-labels the item "About {crate name}", so set
-    // the label explicitly to force "About FlowClone".
+    // The predefined items auto-label themselves with the crate name
+    // ("flowclone-desktop"), so set each label explicitly to use the product name.
     let about = PredefinedMenuItem::about(handle, Some("About FlowClone"), Some(about_metadata))?;
+    let hide = PredefinedMenuItem::hide(handle, Some("Hide FlowClone"))?;
+    let quit = PredefinedMenuItem::quit(handle, Some("Quit"))?;
 
     // No handler is wired yet — the item is intentionally inert for now.
     let check_for_update =
@@ -47,11 +49,11 @@ fn build_menu<R: tauri::Runtime>(
         .separator()
         .services()
         .separator()
-        .hide()
+        .item(&hide)
         .hide_others()
         .show_all()
         .separator()
-        .quit()
+        .item(&quit)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(handle, "Edit")
