@@ -1526,6 +1526,100 @@ pub async fn eject_disk(device_path: String) -> Result<(), String> {
     eject_device(&device_path)
 }
 
+// ─── Image verification ───────────────────────────────────────────────────────
+
+/// The result returned to the frontend after verifying a `.flowimg` file.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyOutcome {
+    pub verifiable: bool,
+    pub matched: bool,
+    pub bytes_checked: u64,
+    pub elapsed_secs: f64,
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+}
+
+/// Internal shape of the JSON the CLI prints to stdout.
+#[derive(Deserialize)]
+struct CliVerifyResult {
+    matched: bool,
+    bytes_checked: u64,
+    elapsed_secs: f64,
+    #[serde(default = "default_true")]
+    verifiable: bool,
+    #[serde(default)]
+    expected: Option<String>,
+    #[serde(default)]
+    actual: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Verify a `.flowimg` against its stored checksum.
+///
+/// Read-only and unprivileged — runs the bundled CLI `verify-image` subcommand
+/// without elevation. The CLI prints one JSON line to stdout on success **or**
+/// on a checksum mismatch (non-zero exit but valid JSON). If the image is
+/// structurally corrupt the CLI may exit non-zero without printing JSON; in that
+/// case we surface the stderr as an `Err`.
+#[tauri::command]
+pub async fn verify_image(app: AppHandle, image_path: String) -> Result<VerifyOutcome, String> {
+    let image_path = image_path.trim().to_string();
+    if image_path.is_empty() {
+        return Err("image path is required".into());
+    }
+    let cli = resolve_cli_binary()?;
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(cli)
+            .arg("verify-image")
+            .arg("--image")
+            .arg(&image_path)
+            .output()
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("failed to run verify-image: {error}"))?;
+
+    // The CLI prints the JSON result on stdout even on a checksum mismatch
+    // (non-zero exit + JSON present → valid VerifyOutcome, not an error).
+    // A zstd-corrupted payload makes the decoder error out without any JSON;
+    // in that case "non-zero exit AND no parseable JSON" → Err to the caller.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+        .ok_or_else(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            format!(
+                "could not verify image (it may be corrupt): {}",
+                stderr.trim()
+            )
+        })?;
+
+    let parsed: CliVerifyResult =
+        serde_json::from_str(line).map_err(|error| format!("bad verify result: {error}"))?;
+
+    // Suppress the unused-variable warning for `app` — we accept AppHandle to
+    // match the Tauri command signature convention used by the other commands
+    // (and to allow future progress-event emission without a signature change).
+    let _ = &app;
+
+    Ok(VerifyOutcome {
+        verifiable: parsed.verifiable,
+        matched: parsed.matched,
+        bytes_checked: parsed.bytes_checked,
+        elapsed_secs: parsed.elapsed_secs,
+        expected: parsed.expected,
+        actual: parsed.actual,
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[cfg(target_os = "macos")]
 fn eject_device(device_path: &str) -> Result<(), String> {
     // `diskutil eject` unmounts the disk's volumes and spins it down so it can be

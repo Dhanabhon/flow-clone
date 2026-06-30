@@ -111,6 +111,7 @@ pub fn run() {
             commands::pending_image_job,
             commands::discard_pending_image,
             commands::dismiss_pending_image,
+            commands::verify_image,
         ])
         .setup(|app| {
             // DevTools are disabled in release builds by default: the `devtools`
