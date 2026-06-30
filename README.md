@@ -1,12 +1,14 @@
 # FlowClone
 
-[![Version](https://img.shields.io/github/v/release/Dhanabhon/flow-clone?label=version&sort=semver)](https://github.com/Dhanabhon/flow-clone/releases/latest)
+[![Version](https://img.shields.io/badge/version-0.3.6-blue)](https://github.com/Dhanabhon/flow-clone/releases/latest)
 
 Move everything. Lose nothing.
 
 FlowClone is a modern, open-source SSD migration assistant for macOS and Windows
 (macOS-first). It is a Tauri desktop app with a React interface, English/Thai UI
 support, and a Rust workspace behind it.
+
+> **Tested on:** MacBook (Apple **M4 Max**), **macOS Tahoe 26.5.1**.
 
 ## Key features
 
@@ -76,6 +78,9 @@ still stubbed.
 
 ### UI shell
 
+- First-run onboarding that walks you through granting the access FlowClone
+  needs (macOS Full Disk Access / Windows UAC); reopen it anytime from the
+  toolbar.
 - Switch between English and Thai.
 - Persist the selected language locally.
 - Switch between light and dark mode.
