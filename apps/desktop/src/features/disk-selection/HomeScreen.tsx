@@ -8,6 +8,7 @@ import {
   HardDriveUpload,
   Lightbulb,
   RefreshCw,
+  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -23,11 +24,16 @@ import {
   ejectDisk,
   isTauriRuntime,
   pendingImageJob,
+  verifyImage,
   type PendingImage,
 } from "@/lib/tauri";
 import { useI18n } from "@/lib/i18n";
 import { cn, fileNameFromPath, formatBytes, formatDuration } from "@/lib/utils";
 import type { DiskInfo, Progress } from "@/lib/types";
+import {
+  VerifyResultBanner,
+  type VerifyState,
+} from "@/features/verify/VerifyResultBanner";
 import appLogo from "@/assets/app-logo.png";
 
 const IMAGE_ESTIMATE_BYTES_PER_SEC = 300_000_000;
@@ -62,6 +68,31 @@ export function HomeScreen() {
   // enumerated until physically unplugged), so hide them from the list instead
   // of waiting for them to disappear on their own.
   const [ejectedPaths, setEjectedPaths] = useState<Set<string>>(new Set());
+
+  // Standalone image verification state
+  const [standaloneVerifyState, setStandaloneVerifyState] =
+    useState<VerifyState>("idle");
+
+  async function pickAndVerify() {
+    const selected = isTauriRuntime()
+      ? await open({
+          multiple: false,
+          filters: [{ name: t("flowCloneImage"), extensions: ["flowimg"] }],
+        })
+      : window.prompt(t("openImagePrompt"), "");
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+
+    setStandaloneVerifyState("running");
+    try {
+      const outcome = await verifyImage(path);
+      setStandaloneVerifyState(outcome);
+    } catch (err) {
+      setStandaloneVerifyState({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   const selectableDisks = useMemo(
     () =>
@@ -212,6 +243,23 @@ export function HomeScreen() {
         <p className="mx-auto mt-3 max-w-2xl text-lg text-muted">
           {t("homeSubtitle")}
         </p>
+        <div className="mt-5 flex flex-col items-center gap-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-muted hover:text-text"
+            disabled={standaloneVerifyState === "running"}
+            onClick={pickAndVerify}
+          >
+            <ShieldCheck className="h-4 w-4" />
+            {t("verifyPick")}
+          </Button>
+          {standaloneVerifyState !== "idle" && (
+            <div className="w-full max-w-md">
+              <VerifyResultBanner state={standaloneVerifyState} />
+            </div>
+          )}
+        </div>
       </header>
 
       {pending && (

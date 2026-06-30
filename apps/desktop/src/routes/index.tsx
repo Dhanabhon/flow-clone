@@ -24,8 +24,13 @@ import {
   saveReportFile,
   startCloneStub,
   validateImageStub,
+  verifyImage,
 } from "@/lib/tauri";
 import type { ImageValidation, Progress } from "@/lib/types";
+import {
+  VerifyResultBanner,
+  type VerifyState,
+} from "@/features/verify/VerifyResultBanner";
 import { fileNameFromPath, formatBytes, formatDuration, formatSpeed } from "@/lib/utils";
 import { HomeScreen } from "@/features/disk-selection/HomeScreen";
 import { useFlowStore, type WorkflowMode } from "@/stores/flow-store";
@@ -515,6 +520,20 @@ function CompletedScreen() {
   const [imageValidationError, setImageValidationError] = useState<
     string | null
   >(null);
+  const [verifyState, setVerifyState] = useState<VerifyState>("idle");
+
+  async function runVerify() {
+    if (!imagePath) return;
+    setVerifyState("running");
+    try {
+      const outcome = await verifyImage(imagePath);
+      setVerifyState(outcome);
+    } catch (err) {
+      setVerifyState({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   const imageName = fileNameFromPath(imagePath, "migration.flowimg");
   const isImageMode = mode === "image";
   const isRestoreMode = mode === "restore";
@@ -637,6 +656,20 @@ function CompletedScreen() {
                   })
                 : t("imageVerifying")}
           </p>
+        )}
+
+        {isImageMode && imagePath && (
+          <div className="mt-4">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={verifyState === "running"}
+              onClick={runVerify}
+            >
+              {t("verifyImage")}
+            </Button>
+            <VerifyResultBanner state={verifyState} />
+          </div>
         )}
 
         {report && (
