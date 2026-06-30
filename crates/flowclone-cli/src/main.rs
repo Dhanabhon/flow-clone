@@ -43,13 +43,12 @@ const UNFINALIZED_DIGEST_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Offset of the v2 header JSON within the file: magic + the u64 length prefix.
-/// Used by Task 3's seek-back to overwrite the digest after the payload is written.
-#[allow(dead_code)]
+/// Used by the seek-back rewrite to overwrite the digest after the payload is written.
 const HEADER_OFFSET_V2: u64 = FLOW_IMAGE_MAGIC_V2.len() as u64 + 8;
 
 /// Whether a `payload_sha256` value is a real, usable digest (64 hex chars and
 /// not the all-zeros sentinel).
-#[allow(dead_code)]
+#[cfg(test)]
 fn digest_is_finalized(hex: &str) -> bool {
     hex.len() == 64 && hex != UNFINALIZED_DIGEST_HEX && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -468,6 +467,10 @@ struct ImageInfo {
     /// Present-block runs for a sparse (used-only) image; `None` = full image.
     block_map: Option<BlockMap>,
     source: DiskInfo,
+    /// SHA-256 hex digest of the logical payload from a v2 header; `None` for
+    /// v1 images or v2 images that pre-date this field. Read by Task 4 verify.
+    #[allow(dead_code)]
+    payload_sha256: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -491,7 +494,6 @@ struct FlowImageHeaderV2Owned {
     block_map: Option<BlockMap>,
     /// SHA-256 hex digest of the payload; `None` for old v2 images without this
     /// field. Task 3 reads this to verify the image before restore.
-    #[allow(dead_code)]
     #[serde(default)]
     payload_sha256: Option<String>,
 }
@@ -626,6 +628,7 @@ fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
             compression: Compression::None,
             block_map: None,
             source: parsed.source,
+            payload_sha256: None,
         });
     }
 
@@ -693,6 +696,7 @@ fn read_flow_image_header(image_path: &str) -> Result<ImageInfo> {
         compression,
         block_map,
         source: parsed.source,
+        payload_sha256: parsed.payload_sha256,
     })
 }
 
@@ -951,15 +955,18 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
         UNFINALIZED_DIGEST_HEX,
     )?;
 
+    let mut hashing = flowclone_verify::checksum::Sha256Writer::new(image);
     copy_disk_payload(
         &mut reader,
-        &mut image,
+        &mut hashing,
         source,
         image_path,
         &cancel_path,
         &partial_path,
     )?;
-
+    let (digest, mut image) = hashing.into_parts();
+    let digest_hex = flowclone_verify::checksum::hex(&digest);
+    rewrite_header_digest(&mut image, source, Compression::None, None, &digest_hex)?;
     image.sync_all()?;
     drop(image);
     finalize_image(&partial_path, image_path)
@@ -987,22 +994,23 @@ fn create_compressed_image_file(
         None,
         UNFINALIZED_DIGEST_HEX,
     )?;
-    let mut encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
+    let encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
         .map_err(|error| anyhow::anyhow!("init compressor: {error}"))?;
-
+    let mut hashing = flowclone_verify::checksum::Sha256Writer::new(encoder);
     copy_disk_payload(
         &mut reader,
-        &mut encoder,
+        &mut hashing,
         source,
         image_path,
         &cancel_path,
         &partial_path,
     )?;
-
-    // Flush the zstd stream and recover the file handle to fsync + finalize.
-    let image = encoder
+    let (digest, encoder) = hashing.into_parts();
+    let mut image = encoder
         .finish()
         .map_err(|error| anyhow::anyhow!("finish compressor: {error}"))?;
+    let digest_hex = flowclone_verify::checksum::hex(&digest);
+    rewrite_header_digest(&mut image, source, Compression::Zstd, None, &digest_hex)?;
     image.sync_all()?;
     drop(image);
     finalize_image(&partial_path, image_path)
@@ -1034,33 +1042,53 @@ fn create_sparse_image_file(
 
     match compression {
         Compression::None => {
+            let mut hashing = flowclone_verify::checksum::Sha256Writer::new(image);
             copy_present_blocks(
                 &mut reader,
-                &mut image,
+                &mut hashing,
                 source,
                 block_map,
                 image_path,
                 &cancel_path,
                 &partial_path,
+            )?;
+            let (digest, mut image) = hashing.into_parts();
+            let digest_hex = flowclone_verify::checksum::hex(&digest);
+            rewrite_header_digest(
+                &mut image,
+                source,
+                Compression::None,
+                Some(block_map),
+                &digest_hex,
             )?;
             image.sync_all()?;
             drop(image);
         }
         Compression::Zstd => {
-            let mut encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
+            let encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
                 .map_err(|error| anyhow::anyhow!("init compressor: {error}"))?;
+            let mut hashing = flowclone_verify::checksum::Sha256Writer::new(encoder);
             copy_present_blocks(
                 &mut reader,
-                &mut encoder,
+                &mut hashing,
                 source,
                 block_map,
                 image_path,
                 &cancel_path,
                 &partial_path,
             )?;
-            let image = encoder
+            let (digest, encoder) = hashing.into_parts();
+            let mut image = encoder
                 .finish()
                 .map_err(|error| anyhow::anyhow!("finish compressor: {error}"))?;
+            let digest_hex = flowclone_verify::checksum::hex(&digest);
+            rewrite_header_digest(
+                &mut image,
+                source,
+                Compression::Zstd,
+                Some(block_map),
+                &digest_hex,
+            )?;
             image.sync_all()?;
             drop(image);
         }
@@ -1418,6 +1446,22 @@ fn flow_image_header_v2(
         note: "Disk payload follows this header.",
     })
     .map_err(Into::into)
+}
+
+/// Overwrite a v2 image's header in place with the real payload digest. The
+/// header length is unchanged because only the fixed-width `payload_sha256`
+/// value differs, so the payload offset never moves.
+fn rewrite_header_digest(
+    image: &mut File,
+    source: &DiskInfo,
+    compression: Compression,
+    block_map: Option<&BlockMap>,
+    digest_hex: &str,
+) -> Result<()> {
+    let header = flow_image_header_v2(source, compression, block_map, digest_hex)?;
+    image.seek(SeekFrom::Start(HEADER_OFFSET_V2))?;
+    image.write_all(&header)?;
+    Ok(())
 }
 
 fn flow_image_file_len(source: &DiskInfo) -> Result<u64> {
@@ -2164,5 +2208,68 @@ mod tests {
             estimated_image_required_bytes(&source, true, None).unwrap(),
             full
         );
+    }
+
+    /// Build a `DiskInfo` whose `total_bytes` equals `n`. The device path and
+    /// other fields use placeholder values — sufficient for create tests that
+    /// open the source file directly rather than through the disk catalog.
+    fn test_source_sized(n: u64) -> DiskInfo {
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.model = "Test SSD".into();
+        source.total_bytes = n;
+        source
+    }
+
+    /// Create a unique temporary directory for a test. Mirrors the pattern used
+    /// in `flowclone-verify/src/sampler.rs`. Each test gets its own directory so
+    /// parallel test runs do not collide.
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "flowclone-cli-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn full_uncompressed_image_stores_real_payload_digest() {
+        use flowclone_verify::checksum::{hex, sha256};
+        let dir = unique_temp_dir("verify-create-full");
+        let src = dir.join("src.bin");
+        let img = dir.join("out.flowimg");
+        let payload = vec![0xABu8; IMAGE_BLOCK_SIZE + 1234]; // > 1 block, partial tail
+        std::fs::write(&src, &payload).unwrap();
+
+        let source = test_source_sized(payload.len() as u64);
+        create_flow_image_file(src.to_str().unwrap(), img.to_str().unwrap(), &source).unwrap();
+
+        let info = read_flow_image_header(img.to_str().unwrap()).unwrap();
+        let stored = info.payload_sha256.expect("digest present");
+        assert!(digest_is_finalized(&stored));
+        assert_eq!(stored, hex(&sha256(&payload)));
+    }
+
+    #[test]
+    fn compressed_image_stores_real_payload_digest() {
+        use flowclone_verify::checksum::{hex, sha256};
+        let dir = unique_temp_dir("verify-create-zstd");
+        let src = dir.join("src.bin");
+        let img = dir.join("out.flowimg");
+        let payload = vec![0x5Au8; IMAGE_BLOCK_SIZE * 2];
+        std::fs::write(&src, &payload).unwrap();
+        let source = test_source_sized(payload.len() as u64);
+
+        create_compressed_image_file(src.to_str().unwrap(), img.to_str().unwrap(), &source)
+            .unwrap();
+
+        let info = read_flow_image_header(img.to_str().unwrap()).unwrap();
+        let stored = info.payload_sha256.expect("digest present");
+        assert!(digest_is_finalized(&stored));
+        assert_eq!(stored, hex(&sha256(&payload)));
     }
 }
