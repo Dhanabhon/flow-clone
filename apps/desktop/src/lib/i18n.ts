@@ -194,6 +194,30 @@ const en = {
   done: "Done",
   chooseDisksFirst: "Choose source and target disks first.",
   back: "Back",
+
+  // Onboarding (first-run guide)
+  onboardingSkip: "Skip",
+  onboardingBack: "Back",
+  onboardingContinue: "Continue",
+  onboardingGetStarted: "Get started",
+  onboardingReopen: "Show the welcome guide",
+  onboardingStepLabel: "Step {current} of {total}",
+  onboardingWelcomeTitle: "Welcome to FlowClone",
+  onboardingWelcomeBody:
+    "Move everything, lose nothing. Let's get you set up in a few seconds.",
+  onboardingWhatTitle: "What FlowClone does",
+  onboardingWhatBody:
+    "Image Migration copies an SSD into a single `.flowimg` file — pick Smart (used data only), Exact (full copy), and optional compression. Restore Image writes that file back onto another SSD. Restore erases the target, so always double-check the disk.",
+  onboardingPermTitleMac: "Grant Full Disk Access",
+  onboardingPermBodyMac:
+    "FlowClone needs Full Disk Access to read and write raw disks. Open System Settings, turn on FlowClone, then quit and reopen the app.",
+  onboardingPermOpen: "Open Full Disk Access",
+  onboardingPermTitleWin: "About permissions",
+  onboardingPermBodyWin:
+    "On Windows, FlowClone asks for permission with a UAC prompt when you create or restore an image — nothing to set up here.",
+  onboardingReadyTitle: "You're all set",
+  onboardingReadyBody:
+    "Plug in a drive to begin. You can reopen this guide anytime from the toolbar.",
 } as const;
 
 type MessageKey = keyof typeof en;
@@ -382,6 +406,30 @@ const th: Record<MessageKey, string> = {
   done: "เสร็จสิ้น",
   chooseDisksFirst: "เลือกดิสก์ต้นทางและปลายทางก่อน",
   back: "กลับ",
+
+  // Onboarding (first-run guide)
+  onboardingSkip: "ข้าม",
+  onboardingBack: "ย้อนกลับ",
+  onboardingContinue: "ถัดไป",
+  onboardingGetStarted: "เริ่มใช้งาน",
+  onboardingReopen: "แสดงคู่มือเริ่มต้นอีกครั้ง",
+  onboardingStepLabel: "ขั้นที่ {current} จาก {total}",
+  onboardingWelcomeTitle: "ยินดีต้อนรับสู่ FlowClone",
+  onboardingWelcomeBody:
+    "ย้ายทุกอย่าง ไม่สูญหาย — ตั้งค่าให้พร้อมใช้ในไม่กี่วินาที",
+  onboardingWhatTitle: "FlowClone ทำอะไรได้บ้าง",
+  onboardingWhatBody:
+    "Image Migration คัดลอก SSD เป็นไฟล์ `.flowimg` ไฟล์เดียว — เลือก Smart (เฉพาะข้อมูลที่ใช้), Exact (ก๊อปเต็ม) และบีบอัดได้ ส่วน Restore Image เขียนไฟล์นั้นกลับลง SSD อีกลูก การกู้คืนจะลบข้อมูลดิสก์ปลายทาง ตรวจให้แน่ใจทุกครั้ง",
+  onboardingPermTitleMac: "เปิดสิทธิ์ Full Disk Access",
+  onboardingPermBodyMac:
+    "FlowClone ต้องใช้สิทธิ์ Full Disk Access เพื่ออ่าน/เขียนดิสก์แบบ raw เปิด System Settings แล้วเปิดสวิตช์ให้ FlowClone จากนั้นปิดและเปิดแอปใหม่",
+  onboardingPermOpen: "เปิด Full Disk Access",
+  onboardingPermTitleWin: "เกี่ยวกับสิทธิ์การเข้าถึง",
+  onboardingPermBodyWin:
+    "บน Windows FlowClone จะขอสิทธิ์ผ่าน UAC prompt ตอนสร้างหรือกู้คืนอิมเมจ ไม่ต้องตั้งค่าล่วงหน้า",
+  onboardingReadyTitle: "พร้อมแล้ว",
+  onboardingReadyBody:
+    "เสียบไดรฟ์เพื่อเริ่มต้น เปิดคู่มือนี้ดูซ้ำได้ตลอดจากแถบเครื่องมือ",
 };
 
 const messages: Record<Locale, Record<MessageKey, string>> = { en, th };
