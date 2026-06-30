@@ -300,7 +300,7 @@ pnpm tauri build --bundles nsis
 Expected output:
 
 ```text
-target\release\bundle\nsis\FlowClone_0.3.6_x64-setup.exe
+target\release\bundle\nsis\FlowClone_0.3.7_x64-setup.exe
 ```
 
 If the Windows host is not x64, install the target explicitly and pass it:
@@ -315,6 +315,7 @@ distribution needs Windows code signing.
 
 ## Docs
 
+- [User Guide (web)](https://dhanabhon.github.io/flow-clone/) — online guide with screenshots
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — how to install and use FlowClone
 - [`CHANGELOG.md`](CHANGELOG.md)
 - [`docs/DESIGN.md`](docs/DESIGN.md)
