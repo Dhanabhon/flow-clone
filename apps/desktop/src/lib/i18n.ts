@@ -200,7 +200,6 @@ const en = {
   onboardingBack: "Back",
   onboardingContinue: "Continue",
   onboardingGetStarted: "Get started",
-  onboardingReopen: "Show the welcome guide",
   onboardingStepLabel: "Step {current} of {total}",
   onboardingWelcomeTitle: "Welcome to FlowClone",
   onboardingWelcomeBody:
@@ -216,8 +215,27 @@ const en = {
   onboardingPermBodyWin:
     "On Windows, FlowClone asks for permission with a UAC prompt when you create or restore an image — nothing to set up here.",
   onboardingReadyTitle: "You're all set",
-  onboardingReadyBody:
-    "Plug in a drive to begin. You can reopen this guide anytime from the toolbar.",
+  onboardingReadyBody: "Plug in a drive to begin.",
+
+  // Settings
+  settingsOpen: "Settings",
+  settingsTitle: "Settings",
+  settingsClose: "Close",
+  settingsAppearance: "Appearance",
+  settingsTheme: "Theme",
+  settingsLanguage: "Language",
+  settingsPermissions: "Permissions",
+  settingsPermBodyMac:
+    "FlowClone needs Full Disk Access to read and write raw disks. Open System Settings, turn on FlowClone, then quit and reopen the app. You may need to grant it again after some macOS updates.",
+  settingsPermOpen: "Open Full Disk Access",
+  settingsPermBodyWin:
+    "On Windows, FlowClone asks for permission with a UAC prompt when you create or restore an image — nothing to set up here.",
+  settingsAbout: "About",
+  settingsVersion: "Version {version}",
+  settingsReportBody:
+    "Found a bug or have a request? Open an issue on GitHub.",
+  settingsReportIssue: "Report an issue",
+  settingsViewGithub: "View on GitHub",
 } as const;
 
 type MessageKey = keyof typeof en;
@@ -412,7 +430,6 @@ const th: Record<MessageKey, string> = {
   onboardingBack: "ย้อนกลับ",
   onboardingContinue: "ถัดไป",
   onboardingGetStarted: "เริ่มใช้งาน",
-  onboardingReopen: "แสดงคู่มือเริ่มต้นอีกครั้ง",
   onboardingStepLabel: "ขั้นที่ {current} จาก {total}",
   onboardingWelcomeTitle: "ยินดีต้อนรับสู่ FlowClone",
   onboardingWelcomeBody:
@@ -428,8 +445,26 @@ const th: Record<MessageKey, string> = {
   onboardingPermBodyWin:
     "บน Windows FlowClone จะขอสิทธิ์ผ่าน UAC prompt ตอนสร้างหรือกู้คืนอิมเมจ ไม่ต้องตั้งค่าล่วงหน้า",
   onboardingReadyTitle: "พร้อมแล้ว",
-  onboardingReadyBody:
-    "เสียบไดรฟ์เพื่อเริ่มต้น เปิดคู่มือนี้ดูซ้ำได้ตลอดจากแถบเครื่องมือ",
+  onboardingReadyBody: "เสียบไดรฟ์เพื่อเริ่มต้น",
+
+  // Settings
+  settingsOpen: "ตั้งค่า",
+  settingsTitle: "ตั้งค่า",
+  settingsClose: "ปิด",
+  settingsAppearance: "การแสดงผล",
+  settingsTheme: "ธีม",
+  settingsLanguage: "ภาษา",
+  settingsPermissions: "สิทธิ์การเข้าถึง",
+  settingsPermBodyMac:
+    "FlowClone ต้องใช้สิทธิ์ Full Disk Access เพื่ออ่าน/เขียนดิสก์แบบ raw เปิด System Settings แล้วเปิดสวิตช์ให้ FlowClone จากนั้นปิดและเปิดแอปใหม่ หลังอัปเดต macOS บางครั้งอาจต้องเปิดสิทธิ์ใหม่อีกครั้ง",
+  settingsPermOpen: "เปิด Full Disk Access",
+  settingsPermBodyWin:
+    "บน Windows FlowClone จะขอสิทธิ์ผ่าน UAC prompt ตอนสร้างหรือกู้คืนอิมเมจ ไม่ต้องตั้งค่าล่วงหน้า",
+  settingsAbout: "เกี่ยวกับ",
+  settingsVersion: "เวอร์ชัน {version}",
+  settingsReportBody: "พบบั๊กหรือมีข้อเสนอแนะ? เปิด issue บน GitHub ได้เลย",
+  settingsReportIssue: "รายงานปัญหา",
+  settingsViewGithub: "ดูบน GitHub",
 };
 
 const messages: Record<Locale, Record<MessageKey, string>> = { en, th };
