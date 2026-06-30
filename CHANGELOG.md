@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-06-30
+
+### Added
+
+- **Settings modal.** A gear icon in the toolbar opens a Settings panel with
+  three sections:
+  - **Appearance** — theme toggle (Light / Dark / System) and language toggle
+    (English / Thai).
+  - **Permissions** — macOS Full Disk Access shortcut (opens System Settings
+    directly); Windows shows a UAC note.
+  - **About** — app version, link to report an issue on GitHub, and link to the
+    repository.
+- **`open_external_url` Rust command.** Scheme-validated (HTTP/HTTPS only),
+  rejects shell metacharacters and control characters before spawning the
+  platform opener. Used by the About section links.
+
+### Changed
+
+- **Onboarding is now first-run only.** The "?" help button has been replaced
+  by the gear Settings icon. The onboarding tour still shows automatically on
+  first launch but no longer has a reopen path — Full Disk Access is now
+  accessible via Settings → Permissions.
+
 ## [0.3.6] - 2026-06-30
 
 ### Added
@@ -14,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **First-run onboarding.** A short guided tour on first launch — Welcome → what
   FlowClone does → permissions → ready — that walks you through granting the
   access the app needs (macOS **Full Disk Access**, or a UAC note on Windows).
-  It's skippable and can be reopened anytime from the toolbar.
+  It's skippable.
 
 ## [0.3.5] - 2026-06-30
 
