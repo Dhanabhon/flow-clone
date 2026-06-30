@@ -35,6 +35,25 @@ const _: () = assert!(
 /// zstd level for `--compress`. 3 is zstd's default — a good speed/ratio balance.
 const ZSTD_LEVEL: i32 = 3;
 
+/// A v2 header's `payload_sha256` before the real digest is known. A finalized
+/// image overwrites this in place once the payload is fully written. All-zeros
+/// is treated as "unverifiable", never as a real (matching) digest — so a
+/// create killed mid-finalize reports unverifiable, not corrupt.
+const UNFINALIZED_DIGEST_HEX: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Offset of the v2 header JSON within the file: magic + the u64 length prefix.
+/// Used by Task 3's seek-back to overwrite the digest after the payload is written.
+#[allow(dead_code)]
+const HEADER_OFFSET_V2: u64 = FLOW_IMAGE_MAGIC_V2.len() as u64 + 8;
+
+/// Whether a `payload_sha256` value is a real, usable digest (64 hex chars and
+/// not the all-zeros sentinel).
+#[allow(dead_code)]
+fn digest_is_finalized(hex: &str) -> bool {
+    hex.len() == 64 && hex != UNFINALIZED_DIGEST_HEX && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Payload codec recorded in a v2 image header.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Compression {
@@ -470,6 +489,11 @@ struct FlowImageHeaderV2Owned {
     mode: String,
     #[serde(default)]
     block_map: Option<BlockMap>,
+    /// SHA-256 hex digest of the payload; `None` for old v2 images without this
+    /// field. Task 3 reads this to verify the image before restore.
+    #[allow(dead_code)]
+    #[serde(default)]
+    payload_sha256: Option<String>,
 }
 
 /// Restore a `.flowimg` onto a target disk. **Destructive** — overwrites it.
@@ -907,6 +931,8 @@ struct FlowImageHeaderV2<'a> {
     mode: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     block_map: Option<&'a BlockMap>,
+    /// SHA-256 (lowercase hex) of the logical payload. All-zeros = unfinalized.
+    payload_sha256: &'a str,
     note: &'a str,
 }
 
@@ -917,7 +943,13 @@ fn create_flow_image_file(source_path: &str, image_path: &str, source: &DiskInfo
         .map_err(|error| anyhow::anyhow!("open source {source_path}: {error}"))?;
     let mut image = File::create(&partial_path)
         .map_err(|error| anyhow::anyhow!("create image {partial_path}: {error}"))?;
-    write_flow_image_header(&mut image, source)?;
+    write_flow_image_header_v2(
+        &mut image,
+        source,
+        Compression::None,
+        None,
+        UNFINALIZED_DIGEST_HEX,
+    )?;
 
     copy_disk_payload(
         &mut reader,
@@ -948,7 +980,13 @@ fn create_compressed_image_file(
     let mut image = File::create(&partial_path)
         .map_err(|error| anyhow::anyhow!("create image {partial_path}: {error}"))?;
     // The header is written uncompressed; only the payload goes through zstd.
-    write_flow_image_header_v2(&mut image, source, Compression::Zstd, None)?;
+    write_flow_image_header_v2(
+        &mut image,
+        source,
+        Compression::Zstd,
+        None,
+        UNFINALIZED_DIGEST_HEX,
+    )?;
     let mut encoder = zstd::Encoder::new(image, ZSTD_LEVEL)
         .map_err(|error| anyhow::anyhow!("init compressor: {error}"))?;
 
@@ -986,7 +1024,13 @@ fn create_sparse_image_file(
         .map_err(|error| anyhow::anyhow!("open source {source_path}: {error}"))?;
     let mut image = File::create(&partial_path)
         .map_err(|error| anyhow::anyhow!("create image {partial_path}: {error}"))?;
-    write_flow_image_header_v2(&mut image, source, compression, Some(block_map))?;
+    write_flow_image_header_v2(
+        &mut image,
+        source,
+        compression,
+        Some(block_map),
+        UNFINALIZED_DIGEST_HEX,
+    )?;
 
     match compression {
         Compression::None => {
@@ -1316,6 +1360,7 @@ fn write_bad_region_log(image_path: &str, regions: &[(u64, u64)]) {
     let _ = std::fs::write(bad_region_log_path(image_path), text);
 }
 
+#[cfg(test)]
 fn write_flow_image_header(writer: &mut impl Write, source: &DiskInfo) -> Result<()> {
     let header = flow_image_header(source)?;
 
@@ -1341,9 +1386,9 @@ fn write_flow_image_header_v2(
     source: &DiskInfo,
     compression: Compression,
     block_map: Option<&BlockMap>,
+    payload_sha256: &str,
 ) -> Result<()> {
-    let header = flow_image_header_v2(source, compression, block_map)?;
-
+    let header = flow_image_header_v2(source, compression, block_map, payload_sha256)?;
     writer.write_all(FLOW_IMAGE_MAGIC_V2)?;
     writer.write_all(&(header.len() as u64).to_le_bytes())?;
     writer.write_all(&header)?;
@@ -1354,6 +1399,7 @@ fn flow_image_header_v2(
     source: &DiskInfo,
     compression: Compression,
     block_map: Option<&BlockMap>,
+    payload_sha256: &str,
 ) -> Result<Vec<u8>> {
     serde_json::to_vec(&FlowImageHeaderV2 {
         format: FLOW_IMAGE_FORMAT,
@@ -1368,6 +1414,7 @@ fn flow_image_header_v2(
             "full"
         },
         block_map,
+        payload_sha256,
         note: "Disk payload follows this header.",
     })
     .map_err(Into::into)
@@ -1501,6 +1548,35 @@ fn badges(disk: &flowclone_disk::DiskInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_source() -> DiskInfo {
+        let mut source = DiskInfo::placeholder("/dev/disk-test");
+        source.model = "Test SSD".into();
+        source.total_bytes = 256 * 1024 * 1024;
+        source
+    }
+
+    #[test]
+    fn v2_header_length_is_stable_across_digest_rewrite() {
+        let source = test_source();
+        let placeholder =
+            flow_image_header_v2(&source, Compression::Zstd, None, UNFINALIZED_DIGEST_HEX).unwrap();
+        let real_hex = "a".repeat(64);
+        let real = flow_image_header_v2(&source, Compression::Zstd, None, &real_hex).unwrap();
+        assert_eq!(
+            placeholder.len(),
+            real.len(),
+            "digest rewrite must not change header length (payload offset must stay put)"
+        );
+    }
+
+    #[test]
+    fn unfinalized_digest_is_not_finalized() {
+        assert!(!digest_is_finalized(UNFINALIZED_DIGEST_HEX));
+        assert!(!digest_is_finalized(""));
+        assert!(!digest_is_finalized("zz")); // wrong length
+        assert!(digest_is_finalized(&"a".repeat(64)));
+    }
 
     #[test]
     fn arg_value_reads_named_argument() {
@@ -1728,7 +1804,14 @@ mod tests {
         source.model = "Test SSD V2".into();
         source.total_bytes = payload.len() as u64;
         let mut file = File::create(path).expect("create v2 test image");
-        write_flow_image_header_v2(&mut file, &source, compression, None).expect("write v2 header");
+        write_flow_image_header_v2(
+            &mut file,
+            &source,
+            compression,
+            None,
+            UNFINALIZED_DIGEST_HEX,
+        )
+        .expect("write v2 header");
         match compression {
             Compression::None => file.write_all(payload).expect("write payload"),
             Compression::Zstd => {
@@ -1882,8 +1965,14 @@ mod tests {
         }
 
         let mut file = File::create(path).expect("create sparse image");
-        write_flow_image_header_v2(&mut file, &source, compression, Some(&map))
-            .expect("write v2 header");
+        write_flow_image_header_v2(
+            &mut file,
+            &source,
+            compression,
+            Some(&map),
+            UNFINALIZED_DIGEST_HEX,
+        )
+        .expect("write v2 header");
         match compression {
             Compression::None => file.write_all(&payload).expect("write payload"),
             Compression::Zstd => {
