@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { HardDriveUpload, Lock, Rocket } from "lucide-react";
 import appLogo from "@/assets/app-logo.png";
@@ -31,6 +31,11 @@ export function Onboarding() {
   const windows = isWindows();
   const isLast = step === STEP_COUNT - 1;
 
+  // Clear any permission error when leaving the permissions step.
+  useEffect(() => {
+    if (step !== 2) setAccessError(null);
+  }, [step]);
+
   async function openAccess() {
     setAccessError(null);
     try {
@@ -46,7 +51,7 @@ export function Onboarding() {
         <button
           type="button"
           onClick={finish}
-          className="absolute right-5 top-5 text-sm font-medium text-muted transition hover:text-text"
+          className="absolute right-5 top-5 rounded-input px-1 text-sm font-medium text-muted outline-none transition hover:text-text focus-visible:ring-2 focus-visible:ring-primary"
         >
           {t("onboardingSkip")}
         </button>
