@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-06-30
+
+### Added
+
+- **First-run onboarding.** A short guided tour on first launch — Welcome → what
+  FlowClone does → permissions → ready — that walks you through granting the
+  access the app needs (macOS **Full Disk Access**, or a UAC note on Windows).
+  It's skippable and can be reopened anytime from the toolbar.
+
 ## [0.3.5] - 2026-06-30
 
 ### Fixed
@@ -261,7 +270,8 @@ still stubbed.
   disk as target) lives in the Rust core, not the UI.
 - Destructive actions require typed `ERASE` confirmation.
 
-[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Dhanabhon/flow-clone/compare/v0.3.2...v0.3.3
