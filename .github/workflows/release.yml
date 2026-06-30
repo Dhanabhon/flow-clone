@@ -5,13 +5,15 @@ on:
     tags: ["v*"]
 
 jobs:
-  macOS:
-    name: Build macOS app
+  macos-arm:
+    name: Build macOS app (Apple Silicon)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-apple-darwin
       # No `version:` here — pnpm/action-setup reads the version from the
       # `packageManager` field in package.json. Pinning both conflicts
       # (ERR_PNPM_BAD_PM_VERSION).
@@ -21,19 +23,45 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Build CLI sidecar
+      - name: Build CLI sidecar (aarch64)
         # tauri-build resolves the externalBin `binaries/flowclone-<triple>`
         # (gitignored), so it must exist before `tauri build`.
-        run: bash scripts/build-sidecar.sh
-      - name: Build .app
+        run: bash scripts/build-sidecar.sh aarch64-apple-darwin
+      - name: Build .app (aarch64)
         # Only the .app bundle: tauri's bundle_dmg.sh drives Finder via
         # AppleScript and is unreliable on headless CI, and an unsigned CI dmg
         # isn't distributable anyway. The signed release .dmg is built and
         # attached manually. This job verifies the full build + bundle.
-        run: pnpm tauri build --bundles app
+        run: pnpm tauri build --target aarch64-apple-darwin --bundles app
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: flowclone-macos
-          # Workspace target dir is the repo root, not apps/desktop/src-tauri.
-          path: target/release/bundle/macos/*.app
+          name: flowclone-macos-arm
+          path: target/aarch64-apple-darwin/release/bundle/macos/*.app
+
+  macos-intel:
+    name: Build macOS app (Intel)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-apple-darwin
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build CLI sidecar (x86_64)
+        run: bash scripts/build-sidecar.sh x86_64-apple-darwin
+      - name: Build .app (x86_64)
+        run: pnpm tauri build --target x86_64-apple-darwin --bundles app
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowclone-macos-intel
+          path: target/x86_64-apple-darwin/release/bundle/macos/*.app
