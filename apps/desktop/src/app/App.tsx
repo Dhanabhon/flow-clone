@@ -5,12 +5,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Routes } from "@/routes";
 import { ShellControls } from "@/components/flowclone/ShellControls";
 import { Onboarding } from "@/features/onboarding/Onboarding";
+import { Settings } from "@/features/settings/Settings";
 import { isTauriRuntime } from "@/lib/tauri";
 import { useI18n } from "@/lib/i18n";
 import { useFlowStore } from "@/stores/flow-store";
 import { useLocaleStore } from "@/stores/locale-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
@@ -27,6 +29,7 @@ export default function App() {
   const theme = useThemeStore((s) => s.theme);
   const locale = useLocaleStore((s) => s.locale);
   const onboardingOpen = useOnboardingStore((s) => s.open);
+  const settingsOpen = useSettingsStore((s) => s.open);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
   }, [theme]);
@@ -85,6 +88,7 @@ export default function App() {
       <ShellControls />
       <Routes />
       {onboardingOpen && <Onboarding />}
+      {settingsOpen && <Settings />}
     </QueryClientProvider>
   );
 }

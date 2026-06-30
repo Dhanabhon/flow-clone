@@ -1366,6 +1366,72 @@ pub async fn open_full_disk_access_settings() -> Result<(), String> {
     }
 }
 
+/// Whether `url` is safe to hand to the OS link handler.
+///
+/// Only plain `http`/`https` web URLs are allowed. Everything else — other
+/// schemes (`file:`, `javascript:`, custom schemes), empty input, whitespace,
+/// or shell/URL metacharacters — is rejected. This is defense in depth: the
+/// frontend only ever passes two fixed GitHub links, but the command refuses
+/// anything that could redirect the OS handler somewhere unexpected. The set is
+/// intentionally strict because only fixed web links are passed; it is not a
+/// general-purpose URL sanitizer.
+pub fn is_allowed_external_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return false;
+    }
+    !url.chars().any(|c| {
+        c.is_control()
+            || c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\'' | '`' | ';' | '|' | '&' | '$' | '<' | '>' | '\\' | '(' | ')'
+            )
+    })
+}
+
+/// Open an external web URL in the user's default browser. Rejects any URL that
+/// is not a plain `http`/`https` link (see `is_allowed_external_url`).
+#[tauri::command]
+pub async fn open_external_url(url: String) -> Result<(), String> {
+    if !is_allowed_external_url(&url) {
+        return Err(format!("refused to open URL: {url}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("open")
+            .arg(&url)
+            .status()
+            .map_err(|error| format!("failed to open URL: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("open exited with status {status}"))
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // `start` is a cmd builtin; the validator above guarantees `url` has no
+        // shell metacharacters, so this cannot inject extra commands.
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .status()
+            .map_err(|error| format!("failed to open URL: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("start exited with status {status}"))
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("opening external URLs is not supported on this platform.".into())
+    }
+}
+
 /// Safely eject / power down a disk so it can be unplugged. Not destructive and
 /// does not require elevation; the UI only offers it for external disks.
 #[tauri::command]
@@ -1662,6 +1728,36 @@ fn stub_image_manifest(source: &DiskInfo) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allows_plain_https_and_http_web_urls() {
+        assert!(is_allowed_external_url(
+            "https://github.com/Dhanabhon/flow-clone"
+        ));
+        assert!(is_allowed_external_url(
+            "https://github.com/Dhanabhon/flow-clone/issues"
+        ));
+        assert!(is_allowed_external_url("http://example.com"));
+        assert!(is_allowed_external_url("HTTPS://EXAMPLE.COM/path")); // scheme is case-insensitive
+    }
+
+    #[test]
+    fn rejects_non_web_schemes_and_empty() {
+        assert!(!is_allowed_external_url(""));
+        assert!(!is_allowed_external_url("file:///etc/passwd"));
+        assert!(!is_allowed_external_url("javascript:alert(1)"));
+        assert!(!is_allowed_external_url("ftp://example.com"));
+        assert!(!is_allowed_external_url("x-apple.systempreferences:foo"));
+    }
+
+    #[test]
+    fn rejects_shell_metacharacters_and_whitespace() {
+        assert!(!is_allowed_external_url("https://example.com/a;rm -rf /"));
+        assert!(!is_allowed_external_url("https://example.com/$(whoami)"));
+        assert!(!is_allowed_external_url("https://example.com/`id`"));
+        assert!(!is_allowed_external_url("https://example.com/a b")); // whitespace
+        assert!(!is_allowed_external_url("https://example.com/a|b"));
+    }
 
     #[test]
     fn stub_image_manifest_contains_source_metadata() {

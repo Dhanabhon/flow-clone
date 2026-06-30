@@ -215,6 +215,17 @@ export function openFullDiskAccessSettings(): Promise<void> {
   return Promise.resolve();
 }
 
+/**
+ * Open an external web URL in the user's default browser. Under Tauri this goes
+ * through the scheme-validated `open_external_url` command; in a plain browser
+ * it falls back to `window.open`. Only plain http(s) links should be passed.
+ */
+export function openExternal(url: string): Promise<void> {
+  if (isTauriRuntime()) return invoke("open_external_url", { url });
+  window.open(url, "_blank", "noopener,noreferrer");
+  return Promise.resolve();
+}
+
 /** An image job that was interrupted by a crash or power loss. */
 export interface PendingImage {
   image_path: string;
