@@ -1,6 +1,6 @@
 # FlowClone
 
-[![Version](https://img.shields.io/badge/version-0.3.6-blue)](https://github.com/Dhanabhon/flow-clone/releases/latest)
+[![Version](https://img.shields.io/badge/version-0.3.7-blue)](https://github.com/Dhanabhon/flow-clone/releases/latest)
 
 Move everything. Lose nothing.
 
@@ -9,6 +9,8 @@ FlowClone is a modern, open-source SSD migration assistant for macOS and Windows
 support, and a Rust workspace behind it.
 
 > **Tested on:** MacBook (Apple **M4 Max**), **macOS Tahoe 26.5.1**.
+
+![FlowClone home screen](assets/screenshots/screenshot-v0.3.7.png)
 
 ## Key features
 
