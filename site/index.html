@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FlowClone — User Guide</title>
+    <meta
+      name="description"
+      content="How to use FlowClone: image an SSD to a .flowimg file and restore it onto another SSD. macOS and Windows."
+    />
+    <link rel="icon" type="image/png" href="assets/app-logo.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <img class="hero__logo" src="assets/app-logo.png" alt="FlowClone logo" />
+      <h1 class="hero__title">Move everything. Lose nothing.</h1>
+      <p class="hero__tagline">
+        FlowClone User Guide — image an SSD and restore it onto another drive.
+      </p>
+      <div class="hero__actions">
+        <a
+          class="btn btn--primary"
+          href="https://github.com/Dhanabhon/flow-clone/releases/latest"
+          >Download DMG</a
+        >
+        <a
+          class="btn btn--ghost"
+          href="https://github.com/Dhanabhon/flow-clone"
+          >View on GitHub</a
+        >
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="toc" aria-label="Table of contents">
+        <p class="toc__label">On this page</p>
+        <ul class="toc__list">
+          <li><a class="toc__link" href="#install">Install &amp; first launch</a></li>
+          <li><a class="toc__link" href="#home">The home screen</a></li>
+          <li><a class="toc__link" href="#create">Create an image</a></li>
+          <li><a class="toc__link" href="#restore">Restore an image</a></li>
+          <li><a class="toc__link" href="#eject">Eject a disk</a></li>
+          <li><a class="toc__link" href="#flowimg">The .flowimg file</a></li>
+          <li><a class="toc__link" href="#troubleshooting">Troubleshooting</a></li>
+          <li><a class="toc__link" href="#safety">Safety</a></li>
+        </ul>
+      </nav>
+
+      <main class="content">
+        <section class="section">
+          <div class="card">
+            <p class="intro">
+              FlowClone helps you copy an SSD to a <code>.flowimg</code> image
+              file and write that image back onto another SSD. It runs on
+              <strong>macOS</strong> and <strong>Windows</strong>.
+            </p>
+            <ul>
+              <li>
+                <strong>Image Migration</strong> — read a source SSD into a
+                <code>.flowimg</code> file.
+              </li>
+              <li>
+                <strong>Restore Image</strong> — write a <code>.flowimg</code>
+                file back onto a target SSD.
+              </li>
+            </ul>
+            <p>
+              <strong>Direct Clone</strong> (disk-to-disk in one step) is coming
+              in a later version.
+            </p>
+            <div class="callout callout--danger">
+              <strong>⚠️ Restore erases the target disk.</strong> Everything on
+              the target is overwritten. Double-check which disk you select.
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="install">
+          <div class="card">
+            <span class="section__num">Section 1</span>
+            <h2>Install &amp; first launch</h2>
+
+            <h3>macOS</h3>
+            <ol>
+              <li>
+                Open the <code>.dmg</code> and drag <strong>FlowClone</strong> to
+                <strong>Applications</strong>.
+              </li>
+              <li>
+                First launch: the app is unsigned, so
+                <strong>right-click → Open</strong> (once), then confirm.
+              </li>
+              <li>
+                Grant <strong>Full Disk Access</strong>: System Settings →
+                Privacy &amp; Security → <strong>Full Disk Access</strong> →
+                enable <strong>FlowClone</strong>. This is required to read/write
+                raw disks and to read images from protected folders (Downloads,
+                Desktop, Documents). Quit and reopen FlowClone after granting it.
+              </li>
+            </ol>
+
+            <h3>Windows</h3>
+            <ol>
+              <li>Run the <code>*-setup.exe</code> installer.</li>
+              <li>
+                When you create or restore an image, Windows shows a
+                <strong>UAC prompt</strong> — click <strong>Yes</strong> (Run as
+                administrator). No separate Full Disk Access step is needed.
+              </li>
+              <li>
+                Close anything using the target disk before restoring (Explorer
+                windows, antivirus scans, etc.).
+              </li>
+            </ol>
+          </div>
+        </section>
+
+        <section class="section" id="home">
+          <div class="card">
+            <span class="section__num">Section 2</span>
+            <h2>The home screen</h2>
+            <img
+              class="screenshot"
+              src="assets/screenshot-v0.3.7.png"
+              alt="FlowClone home screen showing the mode buttons and disk list"
+            />
+            <ul>
+              <li>
+                <strong>Mode buttons:</strong> Image Migration · Restore Image ·
+                Direct Clone (disabled, shows "Coming soon").
+              </li>
+              <li>
+                <strong>Disk list:</strong> updates automatically as you plug in
+                or remove drives.
+              </li>
+              <li>
+                <strong>Eject:</strong> the unplug icon on external disk cards —
+                safely powers down the drive so you can unplug it.
+              </li>
+              <li>
+                Top-right: <strong>light/dark</strong> theme and
+                <strong>English/ไทย</strong> language toggles, plus a
+                <strong>settings</strong> gear.
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="section" id="create">
+          <div class="card">
+            <span class="section__num">Section 3</span>
+            <h2>Create an image (Image Migration)</h2>
+            <ol>
+              <li>Choose <strong>Image Migration</strong>.</li>
+              <li>Select the <strong>source SSD</strong> (the disk you want to copy).</li>
+              <li>
+                Click <strong>Choose Image Location</strong> and pick where to
+                save the <code>.flowimg</code>.
+              </li>
+              <li>
+                Click <strong>Create Image</strong> and approve the admin prompt
+                (macOS password / Windows UAC).
+              </li>
+              <li>
+                Watch progress: percentage, read/write speed, elapsed, and
+                estimated time. You can <strong>Cancel</strong> at any time (it
+                asks to confirm).
+              </li>
+            </ol>
+            <h3>Notes</h3>
+            <ul>
+              <li>
+                The image is a <strong>full raw copy</strong> of the source disk,
+                so the <code>.flowimg</code> is about the
+                <strong>same size as the disk's capacity</strong> (e.g. a 256 GB
+                disk → ~256 GB file). Make sure the destination has enough free
+                space.
+              </li>
+              <li>
+                If the source has unreadable sectors, FlowClone
+                <strong>skips them</strong> (fills with zeros) and lists them in
+                <code>&lt;image&gt;.badblocks.txt</code> instead of failing.
+              </li>
+              <li>
+                If the drive disconnects mid-copy, FlowClone tries to
+                <strong>reconnect and resume</strong>. If the app or machine
+                stops unexpectedly, the next launch flags the unfinished image so
+                you can discard it.
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="section" id="restore">
+          <div class="card">
+            <span class="section__num">Section 4</span>
+            <h2>Restore an image (Restore Image)</h2>
+            <div class="callout callout--danger">
+              <strong>⚠️ This erases and overwrites the target disk.</strong> It
+              cannot be undone.
+            </div>
+            <ol>
+              <li>Choose <strong>Restore Image</strong>.</li>
+              <li>Select the <code>.flowimg</code> file.</li>
+              <li>
+                Select the <strong>target SSD</strong>. The target must be:
+                <ul>
+                  <li><strong>larger than or equal to</strong> the image's source size,</li>
+                  <li><strong>external</strong> (not the boot/internal disk),</li>
+                  <li><strong>not read-only</strong>.</li>
+                </ul>
+              </li>
+              <li>
+                Type <code>ERASE</code> to confirm, then click
+                <strong>Restore Image</strong>.
+              </li>
+              <li>
+                Approve the admin prompt. Watch progress until it completes; the
+                disk remounts when done.
+              </li>
+            </ol>
+
+            <h3>Restoring onto a brand-new or larger SSD</h3>
+            <p>
+              A new, unformatted SSD is fully supported as a target — it's the
+              safest case, since there's no data to lose. Keep these in mind:
+            </p>
+            <ul>
+              <li>
+                <strong>macOS "disk not readable" pop-up.</strong> When you plug
+                in a brand-new SSD, macOS shows <em>"The disk you inserted was
+                not readable by this computer."</em> Click <strong>Ignore</strong>
+                — <strong>not Initialize</strong>. FlowClone reads the raw disk
+                directly, so the drive still appears in the disk list.
+              </li>
+              <li>
+                <strong>The target must be at least as large as the source's full
+                capacity</strong> (a 256 GB image needs a target of 256 GB or
+                more), regardless of how little data the image actually stores.
+              </li>
+              <li>
+                <strong>Restoring onto a larger SSD (e.g. 256 GB → 512 GB):</strong>
+                the image recreates the source's exact layout, so the extra space
+                is left <strong>unallocated</strong> — the filesystem does
+                <strong>not</strong> grow automatically. Afterward, expand the
+                partition to use the full disk (macOS <strong>Disk Utility</strong>,
+                <code>diskutil</code>, or Windows <strong>Disk Management</strong>).
+              </li>
+              <li>
+                <strong>Same-size drives can differ slightly.</strong> Two "256 GB"
+                SSDs from different brands may not have the exact same byte count.
+                If the target is even slightly smaller than the source, restore is
+                refused with <em>"target too small"</em> — choose a target that is
+                equal or larger (when in doubt, size up).
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="section" id="eject">
+          <div class="card">
+            <span class="section__num">Section 5</span>
+            <h2>Eject a disk</h2>
+            <p>
+              Click the <strong>eject</strong> (unplug) button on an external
+              disk card to safely power it down before unplugging. On macOS this
+              runs <code>diskutil eject</code>; on Windows it uses the "Safely
+              Remove" eject action. The disk disappears from the list when it's
+              safe to remove.
+            </p>
+          </div>
+        </section>
+
+        <section class="section" id="flowimg">
+          <div class="card">
+            <span class="section__num">Section 6</span>
+            <h2>The <code>.flowimg</code> file</h2>
+            <p>
+              A <code>.flowimg</code> is a raw, byte-for-byte image of the source
+              disk plus a small header describing it (source model, capacity). On
+              a built, installed app the file shows the FlowClone icon. Keep it on
+              a drive with enough free space — it is roughly the size of the
+              source disk's capacity.
+            </p>
+          </div>
+        </section>
+
+        <section class="section" id="troubleshooting">
+          <div class="card">
+            <span class="section__num">Section 7</span>
+            <h2>Troubleshooting</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Symptom</th>
+                    <th>Cause / fix</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>"FlowClone CLI not found"</strong></td>
+                    <td>
+                      The CLI sidecar isn't bundled in this build. Use an official
+                      release build, or for development build the CLI
+                      (<code>cargo build -p flowclone-cli</code>).
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>"Operation not permitted" (macOS)</strong></td>
+                    <td>
+                      Full Disk Access isn't granted to the app. Grant it in
+                      Privacy &amp; Security, then quit and reopen the app.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>The disk drops off / "Device not configured"</strong></td>
+                    <td>
+                      A failing drive, cable, port, or enclosure. Try a different
+                      cable, a direct port (no hub), or another enclosure; a drive
+                      that keeps dropping may be failing.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>"target too small"</strong></td>
+                    <td>
+                      The target disk is smaller than the image's source. Use a
+                      target that is at least as large.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>Can't unmount / disk busy</strong></td>
+                    <td>
+                      Close apps using the disk (Finder/Explorer windows,
+                      antivirus), then retry.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>Restore left the target unusable</strong></td>
+                    <td>
+                      A cancelled or interrupted restore leaves a partial disk.
+                      Re-run the restore from the start.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="safety">
+          <div class="card">
+            <span class="section__num">Section 8</span>
+            <h2>Safety</h2>
+            <ul>
+              <li>
+                Restore and (future) clone are <strong>destructive</strong>.
+                FlowClone refuses boot, internal, read-only, and too-small
+                targets, and requires you to type <code>ERASE</code>.
+              </li>
+              <li>Image creation is <strong>read-only</strong> on the source.</li>
+              <li>
+                A full-disk image includes free space, which may contain
+                previously deleted data — treat <code>.flowimg</code> files as
+                sensitive.
+              </li>
+            </ul>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <footer class="footer">
+      <div class="footer__links">
+        <a href="https://github.com/Dhanabhon/flow-clone">GitHub</a>
+        <a href="https://github.com/Dhanabhon/flow-clone/releases">Releases</a>
+        <a href="https://github.com/Dhanabhon/flow-clone/blob/main/LICENSE">License</a>
+      </div>
+      <p>FlowClone is MIT-licensed. Use at your own risk — always keep a verified backup.</p>
+    </footer>
+
+    <script>
+      // Scroll-spy: highlight the TOC link for the section currently in view.
+      (function () {
+        var links = Array.prototype.slice.call(
+          document.querySelectorAll(".toc__link")
+        );
+        var byId = {};
+        links.forEach(function (link) {
+          byId[link.getAttribute("href").slice(1)] = link;
+        });
+
+        var sections = links
+          .map(function (link) {
+            return document.getElementById(link.getAttribute("href").slice(1));
+          })
+          .filter(Boolean);
+
+        function setActive(id) {
+          links.forEach(function (link) {
+            link.classList.toggle(
+              "is-active",
+              link.getAttribute("href").slice(1) === id
+            );
+          });
+        }
+
+        var observer = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.isIntersecting) {
+                setActive(entry.target.id);
+              }
+            });
+          },
+          { rootMargin: "-10% 0px -75% 0px", threshold: 0 }
+        );
+
+        sections.forEach(function (section) {
+          observer.observe(section);
+        });
+      })();
+    </script>
+  </body>
+</html>
