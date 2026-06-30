@@ -7,7 +7,7 @@ use flowclone_core::{CloneEngine, CloneJob, CloneOptions, Phase, Progress};
 use flowclone_disk::{DiskCatalogApi, DiskInfo};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -74,6 +74,8 @@ struct FlowImageHeader {
 /// v2 header (used-only and/or zstd). `uncompressed_bytes` is the logical disk
 /// size the image restores to; the on-disk payload is smaller when sparse or
 /// compressed. `block_map` is present iff `mode` is "used-only".
+/// `payload_sha256` is present in full/none images written by the in-process
+/// path and by the CLI create path (Tasks 2-3); absent in older v2 images.
 #[derive(Debug, Deserialize)]
 struct FlowImageHeaderV2 {
     format: String,
@@ -85,6 +87,10 @@ struct FlowImageHeaderV2 {
     mode: String,
     #[serde(default)]
     block_map: Option<serde_json::Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    // read by the cfg(test) read_payload_digest helper and future verify path
+    payload_sha256: Option<String>,
     note: Option<String>,
 }
 
@@ -795,7 +801,7 @@ fn create_flow_image_file(
         .map_err(|error| format!("failed to open source disk {source_path}: {error}"))?;
     let mut image = File::create(&partial_path)
         .map_err(|error| format!("failed to create image file: {error}"))?;
-    write_flow_image_header(&mut image, source)?;
+    write_flow_image_header_v2_full(&mut image, source, UNFINALIZED_DIGEST_HEX)?;
 
     let start = Instant::now();
     let mut buf = vec![0u8; IMAGE_BLOCK_SIZE];
@@ -803,6 +809,7 @@ fn create_flow_image_file(
     let mut block_index = 0u64;
     let mut last_emit = Instant::now();
     let mut last_emit_bytes = 0u64;
+    let mut hashing = flowclone_verify::checksum::Sha256Writer::new(image);
 
     while bytes_done < source.total_bytes {
         if cancel.load(Ordering::SeqCst) {
@@ -820,7 +827,7 @@ fn create_flow_image_file(
             ));
         }
 
-        image.write_all(&buf[..read]).map_err(|error| {
+        hashing.write_all(&buf[..read]).map_err(|error| {
             format!("failed to write image file at source offset {bytes_done} bytes: {error}")
         })?;
         bytes_done += read as u64;
@@ -846,6 +853,9 @@ fn create_flow_image_file(
         }
     }
 
+    let (digest, mut image) = hashing.into_parts();
+    let digest_hex = flowclone_verify::checksum::hex(&digest);
+    rewrite_header_digest_full(&mut image, source, &digest_hex)?;
     image
         .sync_all()
         .map_err(|error| format!("failed to flush image file: {error}"))?;
@@ -866,20 +876,6 @@ fn create_flow_image_file(
     })
 }
 
-fn write_flow_image_header(writer: &mut impl Write, source: &DiskInfo) -> Result<(), String> {
-    let header = flow_image_header(source)?;
-    let header_len = header.len() as u64;
-    writer
-        .write_all(FLOW_IMAGE_MAGIC)
-        .map_err(|error| format!("failed to write image magic: {error}"))?;
-    writer
-        .write_all(&header_len.to_le_bytes())
-        .map_err(|error| format!("failed to write image header length: {error}"))?;
-    writer
-        .write_all(header.as_bytes())
-        .map_err(|error| format!("failed to write image header: {error}"))
-}
-
 fn flow_image_header(source: &DiskInfo) -> Result<String, String> {
     serde_json::to_string(&FlowImageHeader {
         format: FLOW_IMAGE_FORMAT.into(),
@@ -889,6 +885,97 @@ fn flow_image_header(source: &DiskInfo) -> Result<String, String> {
         note: Some("Raw disk payload follows this header.".into()),
     })
     .map_err(|error| format!("failed to serialize image header: {error}"))
+}
+
+/// Placeholder digest written into the header before the payload is streamed.
+/// Replaced by the real SHA-256 with `rewrite_header_digest_full` afterwards.
+const UNFINALIZED_DIGEST_HEX: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Byte offset at which the JSON header body begins, used by the seek-back rewrite.
+const HEADER_OFFSET_V2: u64 = FLOW_IMAGE_MAGIC_V2.len() as u64 + IMAGE_HEADER_LEN_BYTES as u64;
+
+/// Serialize-only view of a v2 full/none header (written by the in-process path).
+/// Mirrors the CLI Task 3 struct; the two files intentionally duplicate the format
+/// — do NOT extract a shared crate.
+#[derive(Serialize)]
+struct FlowImageHeaderV2Write<'a> {
+    format: &'a str,
+    version: u64,
+    source: &'a DiskInfo,
+    block_size: u64,
+    uncompressed_bytes: u64,
+    compression: &'a str,
+    mode: &'a str,
+    payload_sha256: &'a str,
+    note: &'a str,
+}
+
+fn flow_image_header_v2_full(source: &DiskInfo, payload_sha256: &str) -> Result<String, String> {
+    serde_json::to_string(&FlowImageHeaderV2Write {
+        format: FLOW_IMAGE_FORMAT,
+        version: FLOW_IMAGE_VERSION_V2,
+        source,
+        block_size: IMAGE_BLOCK_SIZE as u64,
+        uncompressed_bytes: source.total_bytes,
+        compression: "none",
+        mode: "full",
+        payload_sha256,
+        note: "Disk payload follows this header.",
+    })
+    .map_err(|error| format!("failed to serialize image header: {error}"))
+}
+
+fn write_flow_image_header_v2_full(
+    writer: &mut impl Write,
+    source: &DiskInfo,
+    payload_sha256: &str,
+) -> Result<(), String> {
+    let header = flow_image_header_v2_full(source, payload_sha256)?;
+    writer
+        .write_all(FLOW_IMAGE_MAGIC_V2)
+        .map_err(|error| format!("failed to write image magic: {error}"))?;
+    writer
+        .write_all(&(header.len() as u64).to_le_bytes())
+        .map_err(|error| format!("failed to write image header length: {error}"))?;
+    writer
+        .write_all(header.as_bytes())
+        .map_err(|error| format!("failed to write image header: {error}"))
+}
+
+/// Seek back to `HEADER_OFFSET_V2` and overwrite the JSON header body with the
+/// finalized digest. The header length in the 8-byte field is unchanged: only
+/// the 64-char hex digest value inside the JSON body differs.
+fn rewrite_header_digest_full(
+    image: &mut File,
+    source: &DiskInfo,
+    digest_hex: &str,
+) -> Result<(), String> {
+    let header = flow_image_header_v2_full(source, digest_hex)?;
+    image
+        .seek(SeekFrom::Start(HEADER_OFFSET_V2))
+        .map_err(|error| format!("failed to seek image header: {error}"))?;
+    image
+        .write_all(header.as_bytes())
+        .map_err(|error| format!("failed to rewrite image header: {error}"))
+}
+
+/// Read the `payload_sha256` from a v2 full/none image header.
+/// Used in tests and diagnostics; not exposed via Tauri.
+#[cfg(test)]
+fn read_payload_digest(image_path: &str) -> Result<String, String> {
+    let mut file = File::open(image_path).map_err(|e| e.to_string())?;
+    let mut magic = vec![0u8; FLOW_IMAGE_MAGIC_V2.len()];
+    file.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    let mut len = [0u8; IMAGE_HEADER_LEN_BYTES];
+    file.read_exact(&mut len).map_err(|e| e.to_string())?;
+    let header_len = u64::from_le_bytes(len) as usize;
+    let mut header = vec![0u8; header_len];
+    file.read_exact(&mut header).map_err(|e| e.to_string())?;
+    let parsed: FlowImageHeaderV2 = serde_json::from_slice(&header).map_err(|e| e.to_string())?;
+    parsed
+        .payload_sha256
+        .ok_or_else(|| "no payload_sha256 in header".to_string())
 }
 
 fn flow_image_file_len(source: &DiskInfo) -> Result<u64, String> {
@@ -1726,6 +1813,24 @@ fn stub_image_manifest(source: &DiskInfo) -> Result<String, String> {
 }
 
 #[cfg(test)]
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("{prefix}-{nanos:x}"));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+}
+
+#[cfg(test)]
+fn test_source_sized(total_bytes: u64) -> DiskInfo {
+    let mut source = DiskInfo::placeholder("/dev/disk-test");
+    source.total_bytes = total_bytes;
+    source
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2026,5 +2131,31 @@ mod tests {
             estimated_image_required_bytes(&source, true, Some(source.total_bytes)).unwrap(),
             full
         );
+    }
+
+    #[test]
+    fn in_process_image_stores_real_payload_digest() {
+        use flowclone_verify::checksum::{hex, sha256};
+        let dir = unique_temp_dir("gui-create-digest");
+        let src = dir.join("src.bin");
+        let img = dir.join("out.flowimg");
+        let payload = vec![0x3Cu8; IMAGE_BLOCK_SIZE + 512];
+        std::fs::write(&src, &payload).unwrap();
+        let source = test_source_sized(payload.len() as u64);
+
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        create_flow_image_file(
+            src.to_str().unwrap(),
+            img.to_str().unwrap(),
+            &source,
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+
+        let validation = validate_image_path(img.to_str().unwrap()).unwrap();
+        assert_eq!(validation.version, FLOW_IMAGE_VERSION_V2);
+        let stored = read_payload_digest(img.to_str().unwrap()).unwrap();
+        assert_eq!(stored, hex(&sha256(&payload)));
     }
 }
