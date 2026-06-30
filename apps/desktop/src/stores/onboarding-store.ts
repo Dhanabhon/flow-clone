@@ -19,8 +19,6 @@ interface OnboardingState {
   open: boolean;
   /** Finish or skip: persist that it has been seen and close the overlay. */
   finish: () => void;
-  /** Show the onboarding overlay again (e.g. from the toolbar). */
-  reopen: () => void;
 }
 
 /** First-run onboarding store. Independent of the workflow phase machine. */
@@ -37,6 +35,5 @@ export const useOnboardingStore = create<OnboardingState>((set) => {
       }
       set({ hasSeen: true, open: false });
     },
-    reopen: () => set({ open: true }),
   };
 });
