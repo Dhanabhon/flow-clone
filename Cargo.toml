@@ -16,7 +16,7 @@ version = "0.3.7"
 edition = "2021"
 license = "MIT"
 authors = ["Tom Dhanabhon"]
-repository = "https://github.com/tom/flow-clone"
+repository = "https://github.com/Dhanabhon/flow-clone"
 rust-version = "1.75"
 
 [workspace.dependencies]

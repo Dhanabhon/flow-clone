@@ -79,8 +79,7 @@ still stubbed.
 ### UI shell
 
 - First-run onboarding that walks you through granting the access FlowClone
-  needs (macOS Full Disk Access / Windows UAC); reopen it anytime from the
-  toolbar.
+  needs (macOS Full Disk Access / Windows UAC).
 - Switch between English and Thai.
 - Persist the selected language locally.
 - Switch between light and dark mode.
