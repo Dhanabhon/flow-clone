@@ -24,6 +24,19 @@ pub struct VerifyResult {
     pub mismatches: u64,
     /// Elapsed seconds.
     pub elapsed_secs: f64,
+    /// False when the image carried no usable digest (legacy / unfinalized).
+    #[serde(default = "default_true")]
+    pub verifiable: bool,
+    /// Expected digest (hex) — set on a mismatch for display.
+    #[serde(default)]
+    pub expected: Option<String>,
+    /// Actual recomputed digest (hex) — set on a mismatch for display.
+    #[serde(default)]
+    pub actual: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl VerifyResult {
@@ -81,6 +94,9 @@ impl Verifier for DefaultVerifier {
             blocks_checked: if bytes_checked == 0 { 0 } else { 8 },
             mismatches: 0,
             elapsed_secs: 0.2,
+            verifiable: true,
+            expected: None,
+            actual: None,
         })
     }
 }

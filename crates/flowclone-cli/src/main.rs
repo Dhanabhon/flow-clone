@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use flowclone_disk::{Connection, DiskCatalogApi, DiskInfo, Health};
+use flowclone_verify::VerifyResult;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -48,7 +49,6 @@ const HEADER_OFFSET_V2: u64 = FLOW_IMAGE_MAGIC_V2.len() as u64 + 8;
 
 /// Whether a `payload_sha256` value is a real, usable digest (64 hex chars and
 /// not the all-zeros sentinel).
-#[cfg(test)]
 fn digest_is_finalized(hex: &str) -> bool {
     hex.len() == 64 && hex != UNFINALIZED_DIGEST_HEX && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -186,6 +186,7 @@ fn main() -> Result<()> {
         "list-disks" | "ls" => list_disks(),
         "create-image" => create_image(),
         "restore-image" => restore_image(),
+        "verify-image" => verify_image(),
         #[cfg(target_os = "windows")]
         "list-volumes" => list_volumes(),
         "version" | "--version" | "-v" => {
@@ -198,6 +199,7 @@ fn main() -> Result<()> {
             eprintln!("  list-disks     List detected disks");
             eprintln!("  create-image   Create a .flowimg from a source disk");
             eprintln!("  restore-image  Write a .flowimg onto a target disk (ERASES it)");
+            eprintln!("  verify-image   Check a .flowimg against its stored checksum");
             eprintln!("  version        Print version");
             Ok(())
         }
@@ -469,7 +471,6 @@ struct ImageInfo {
     source: DiskInfo,
     /// SHA-256 hex digest of the logical payload from a v2 header; `None` for
     /// v1 images or v2 images that pre-date this field. Read by Task 4 verify.
-    #[allow(dead_code)]
     payload_sha256: Option<String>,
 }
 
@@ -496,6 +497,70 @@ struct FlowImageHeaderV2Owned {
     /// field. Task 3 reads this to verify the image before restore.
     #[serde(default)]
     payload_sha256: Option<String>,
+}
+
+/// Decode an image's payload and compare its SHA-256 to the stored digest.
+/// Read-only; never opens a raw device.
+fn verify_image_file(image_path: &str) -> Result<VerifyResult> {
+    let info = read_flow_image_header(image_path)?;
+
+    // No usable digest (v1, missing field, or the unfinalized sentinel).
+    let stored = match info.payload_sha256.as_deref() {
+        Some(hex) if digest_is_finalized(hex) => hex.to_string(),
+        _ => {
+            return Ok(VerifyResult {
+                matched: false,
+                bytes_checked: 0,
+                blocks_checked: 0,
+                mismatches: 0,
+                elapsed_secs: 0.0,
+                verifiable: false,
+                expected: None,
+                actual: None,
+            });
+        }
+    };
+
+    let start = std::time::Instant::now();
+    let mut file = File::open(image_path)
+        .map_err(|error| anyhow::anyhow!("open image {image_path}: {error}"))?;
+    file.seek(SeekFrom::Start(info.data_offset))?;
+    let mut payload: Box<dyn Read> = match info.compression {
+        Compression::None => Box::new(file),
+        Compression::Zstd => Box::new(
+            zstd::Decoder::new(file)
+                .map_err(|error| anyhow::anyhow!("init decompressor: {error}"))?,
+        ),
+    };
+
+    let (digest, bytes) = flowclone_verify::checksum::hash_reader(&mut payload)
+        .map_err(|error| anyhow::anyhow!("read image payload: {error}"))?;
+    let actual = flowclone_verify::checksum::hex(&digest);
+    let matched = actual == stored;
+
+    Ok(VerifyResult {
+        matched,
+        bytes_checked: bytes,
+        blocks_checked: 0,
+        mismatches: if matched { 0 } else { 1 },
+        elapsed_secs: start.elapsed().as_secs_f64(),
+        verifiable: true,
+        expected: if matched { None } else { Some(stored) },
+        actual: if matched { None } else { Some(actual) },
+    })
+}
+
+/// CLI entry: `flowclone verify-image --image <path>`. Prints the result as a
+/// single JSON line on stdout for the GUI to parse.
+fn verify_image() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let image_path = arg_value(&args, "--image")?;
+    let result = verify_image_file(image_path)?;
+    println!("{}", serde_json::to_string(&result)?);
+    if result.verifiable && !result.matched {
+        anyhow::bail!("image verification failed: checksum mismatch");
+    }
+    Ok(())
 }
 
 /// Restore a `.flowimg` onto a target disk. **Destructive** — overwrites it.
@@ -2186,6 +2251,131 @@ mod tests {
         no_serial_found.model = "EC-6606".into();
         no_serial_found.total_bytes = 250_000_000_000;
         assert!(same_disk(&no_serial_found, &no_serial_want));
+    }
+
+    // ── verify-image tests ────────────────────────────────────────────────
+
+    #[test]
+    fn verify_matches_freshly_created_image() {
+        let dir = unique_temp_dir("verify-ok");
+        let src = dir.join("src.bin");
+        let img = dir.join("out.flowimg");
+        std::fs::write(&src, vec![0x11u8; IMAGE_BLOCK_SIZE + 99]).unwrap();
+        let source = test_source_sized(IMAGE_BLOCK_SIZE as u64 + 99);
+        create_flow_image_file(src.to_str().unwrap(), img.to_str().unwrap(), &source).unwrap();
+
+        let result = verify_image_file(img.to_str().unwrap()).unwrap();
+        assert!(result.verifiable);
+        assert!(result.matched);
+        assert_eq!(result.mismatches, 0);
+    }
+
+    #[test]
+    fn verify_detects_a_flipped_payload_byte() {
+        let dir = unique_temp_dir("verify-bad");
+        let src = dir.join("src.bin");
+        let img = dir.join("out.flowimg");
+        std::fs::write(&src, vec![0x22u8; IMAGE_BLOCK_SIZE]).unwrap();
+        let source = test_source_sized(IMAGE_BLOCK_SIZE as u64);
+        create_flow_image_file(src.to_str().unwrap(), img.to_str().unwrap(), &source).unwrap();
+
+        // Corrupt one payload byte (just past the header).
+        let info = read_flow_image_header(img.to_str().unwrap()).unwrap();
+        let mut bytes = std::fs::read(&img).unwrap();
+        let i = info.data_offset as usize + 10;
+        bytes[i] ^= 0xFF;
+        std::fs::write(&img, &bytes).unwrap();
+
+        let result = verify_image_file(img.to_str().unwrap()).unwrap();
+        assert!(result.verifiable);
+        assert!(!result.matched);
+        assert!(result.expected.is_some() && result.actual.is_some());
+    }
+
+    #[test]
+    fn verify_reports_legacy_v1_image_as_unverifiable() {
+        let dir = unique_temp_dir("verify-legacy");
+        let img = dir.join("legacy.flowimg");
+        let source = test_source_sized(IMAGE_BLOCK_SIZE as u64);
+        // Write a v1 image (legacy path) + its payload.
+        let mut file = std::fs::File::create(&img).unwrap();
+        write_flow_image_header(&mut file, &source).unwrap();
+        file.write_all(&vec![0u8; IMAGE_BLOCK_SIZE]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        let result = verify_image_file(img.to_str().unwrap()).unwrap();
+        assert!(!result.verifiable, "v1 image has no digest");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn verify_matches_used_only_image() {
+        let dir = unique_temp_dir("verify-sparse");
+        let src = dir.join("src.bin");
+        let img = dir.join("out.flowimg");
+        let bs = IMAGE_BLOCK_SIZE;
+        // Two blocks present, one absent.
+        let total_bytes = (3 * bs) as u64;
+        let mut source_bytes = vec![0u8; 3 * bs];
+        source_bytes[0..bs].fill(0xAB);
+        source_bytes[bs..2 * bs].fill(0xEE); // block 1 absent
+        source_bytes[2 * bs..3 * bs].fill(0xCD);
+        std::fs::write(&src, &source_bytes).unwrap();
+        let source = test_source_sized(total_bytes);
+        let map = BlockMap {
+            runs: vec![[0, 1], [2, 1]],
+        };
+        create_sparse_image_file(
+            src.to_str().unwrap(),
+            img.to_str().unwrap(),
+            &source,
+            &map,
+            Compression::None,
+        )
+        .unwrap();
+
+        let result = verify_image_file(img.to_str().unwrap()).unwrap();
+        assert!(result.verifiable, "used-only image must be verifiable");
+        assert!(result.matched, "used-only image must match its own digest");
+        assert_eq!(result.mismatches, 0);
+    }
+
+    #[test]
+    fn verify_matches_used_only_compressed_image() {
+        let dir = unique_temp_dir("verify-sparse-zstd");
+        let src = dir.join("src.bin");
+        let img = dir.join("out.flowimg");
+        let bs = IMAGE_BLOCK_SIZE;
+        let total_bytes = (3 * bs) as u64;
+        let mut source_bytes = vec![0u8; 3 * bs];
+        source_bytes[0..bs].fill(0x77);
+        source_bytes[bs..2 * bs].fill(0xEE); // block 1 absent
+        source_bytes[2 * bs..3 * bs].fill(0x33);
+        std::fs::write(&src, &source_bytes).unwrap();
+        let source = test_source_sized(total_bytes);
+        let map = BlockMap {
+            runs: vec![[0, 1], [2, 1]],
+        };
+        create_sparse_image_file(
+            src.to_str().unwrap(),
+            img.to_str().unwrap(),
+            &source,
+            &map,
+            Compression::Zstd,
+        )
+        .unwrap();
+
+        let result = verify_image_file(img.to_str().unwrap()).unwrap();
+        assert!(
+            result.verifiable,
+            "used-only compressed image must be verifiable"
+        );
+        assert!(
+            result.matched,
+            "used-only compressed image must match its own digest"
+        );
+        assert_eq!(result.mismatches, 0);
     }
 
     #[test]
