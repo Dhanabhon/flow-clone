@@ -50,6 +50,13 @@ Add an **optional, additive** field to the v2 header:
   newer readers treat a missing field as `None` ("no checksum / unverifiable").
   No bump to `FLOW_IMAGE_VERSION_V2`.
 - **v1 images** never gain a digest (legacy format, left untouched).
+- **Full-uncompressed create migrates v1 → v2.** Today only compressed and
+  used-only images are v2; a full *uncompressed* image (GUI "Exact" with Compress
+  off) still writes a v1 header, which has nowhere to store a digest. So
+  `create-image`'s full-uncompressed path switches to writing a **v2 full /
+  `compression: "none"`** image (already supported by restore and validation) so
+  that *every* newly created image is v2 and verifiable. The v1 format itself is
+  unchanged — it is simply no longer emitted, only still read for old images.
 - **All-zeros sentinel.** A present-but-all-zero `payload_sha256` means
   "unfinalized / unverifiable", **not** a real digest. If `create-image` is
   killed after the payload is written but before the digest is rewritten, the
