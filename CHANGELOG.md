@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-01
+
+### Added
+
+- **Image verification.** Every newly created `.flowimg` now stores a SHA-256
+  checksum of its payload. A new **Verify image** action (after a create
+  finishes, or standalone via **Verify an image…**) re-reads the file and
+  reports whether it's verified, corrupt, or unverifiable (older images
+  created before checksums existed). Verification is read-only — it never
+  touches raw disks and needs no elevated permissions.
+- **`verify-image` CLI subcommand** — `flowclone verify-image --image <path>`.
+
+### Changed
+
+- Full, uncompressed images now use the same image format (v2) as
+  compressed/used-only images, so every newly created image is verifiable.
+  Existing v1 images still open and restore normally.
+
 ## [0.3.7] - 2026-06-30
 
 ### Added

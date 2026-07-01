@@ -1,6 +1,6 @@
 # FlowClone
 
-[![Version](https://img.shields.io/badge/version-0.3.7-blue)](https://github.com/Dhanabhon/flow-clone/releases/latest)
+[![Version](https://img.shields.io/badge/version-0.3.8-blue)](https://github.com/Dhanabhon/flow-clone/releases/latest)
 
 Move everything. Lose nothing.
 

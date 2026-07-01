@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-cli"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "flowclone-disk",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-core"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "flowclone-disk",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-desktop"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "flowclone-core",
  "flowclone-disk",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-disk"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "core-foundation-sys",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-raw"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "serde",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-report"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "flowclone-disk",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "flowclone-verify"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "serde",
