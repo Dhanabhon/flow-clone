@@ -44,6 +44,16 @@ export interface ImageValidation {
   note: string | null;
 }
 
+/** Result returned by `verify_image` — mirrors the Rust `VerifyOutcome` struct. */
+export interface VerifyOutcome {
+  verifiable: boolean;
+  matched: boolean;
+  bytesChecked: number;
+  elapsedSecs: number;
+  expected: string | null;
+  actual: string | null;
+}
+
 export type Phase =
   | "preparing"
   | "cloning"

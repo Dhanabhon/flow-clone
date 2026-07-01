@@ -55,6 +55,9 @@ pub fn verify_blockwise(
         blocks_checked,
         mismatches,
         elapsed_secs: start.elapsed().as_secs_f64(),
+        verifiable: true,
+        expected: None,
+        actual: None,
     })
 }
 

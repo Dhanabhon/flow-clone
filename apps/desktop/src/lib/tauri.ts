@@ -7,7 +7,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { DiskInfo, ImageValidation, Progress } from "./types";
+import type { DiskInfo, ImageValidation, Progress, VerifyOutcome } from "./types";
 import { fileNameFromPath } from "./utils";
 
 /**
@@ -136,6 +136,22 @@ export const validateImageStub = (
   isTauriRuntime()
     ? invoke<ImageValidation>("validate_image_stub", { imagePath })
     : Promise.resolve(validateBrowserImageStub(imagePath));
+
+/**
+ * Verify a `.flowimg` file against its stored checksum.
+ * Read-only and unprivileged. In the browser/mock the image is assumed valid.
+ */
+export const verifyImage = (imagePath: string): Promise<VerifyOutcome> =>
+  isTauriRuntime()
+    ? invoke<VerifyOutcome>("verify_image", { imagePath })
+    : Promise.resolve({
+        verifiable: true,
+        matched: true,
+        bytesChecked: 0,
+        elapsedSecs: 0,
+        expected: null,
+        actual: null,
+      });
 
 export const generateReportStub = (
   sourcePath: string,

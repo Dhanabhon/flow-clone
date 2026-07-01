@@ -195,6 +195,16 @@ const en = {
   chooseDisksFirst: "Choose source and target disks first.",
   back: "Back",
 
+  // Verify image
+  verifyImage: "Verify image",
+  verifyPick: "Verify an image…",
+  verifying: "Verifying…",
+  verifyVerified: "Verified — checksum matches",
+  verifyCorrupt: "This image is corrupt — checksum does not match",
+  verifyUnverifiable: "This image was created before checksums were added, so it can't be verified",
+  verifyExpected: "Expected",
+  verifyActual: "Actual",
+
   // Onboarding (first-run guide)
   onboardingSkip: "Skip",
   onboardingBack: "Back",
@@ -424,6 +434,16 @@ const th: Record<MessageKey, string> = {
   done: "เสร็จสิ้น",
   chooseDisksFirst: "เลือกดิสก์ต้นทางและปลายทางก่อน",
   back: "กลับ",
+
+  // Verify image
+  verifyImage: "ตรวจสอบอิมเมจ",
+  verifyPick: "ตรวจสอบอิมเมจ…",
+  verifying: "กำลังตรวจสอบ…",
+  verifyVerified: "ตรวจสอบแล้ว — checksum ตรงกัน",
+  verifyCorrupt: "อิมเมจนี้เสียหาย — checksum ไม่ตรงกัน",
+  verifyUnverifiable: "อิมเมจนี้สร้างก่อนจะมีระบบ checksum จึงตรวจสอบไม่ได้",
+  verifyExpected: "ค่าที่คาดไว้",
+  verifyActual: "ค่าที่ได้จริง",
 
   // Onboarding (first-run guide)
   onboardingSkip: "ข้าม",
